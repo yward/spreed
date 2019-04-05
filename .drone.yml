@@ -951,11 +951,9 @@ steps:
       - ln --symbolic `pwd` /var/www/html
 
       # Run acceptance tests
-      - tests/acceptance/run-local.sh --acceptance-tests-dir apps/spreed/tests/acceptance --timeout-multiplier 10 --nextcloud-server-domain acceptance --selenium-server $SELENIUMHOST:4444 allow-git-repository-modifications features/$TESTS_ACCEPTANCE.feature
+      - tests/acceptance/run-local.sh --acceptance-tests-dir apps/spreed/tests/acceptance --timeout-multiplier 10 --nextcloud-server-domain acceptance --selenium-server selenium:4444 allow-git-repository-modifications features/$TESTS_ACCEPTANCE.feature
 
 services:
-  - name: cache
-    image: redis
   - name: selenium
     image: selenium/standalone-firefox:2.53.1-beryllium
     environment:
