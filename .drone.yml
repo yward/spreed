@@ -104,10 +104,10 @@ trigger:
 
 ---
 kind: pipeline
-name: phpunit-sqlite
+name: unit-sqlite-php7.1
 
 steps:
-  - name: phpunit-sqlite-php7.1
+  - name: sqlite-php7.1
     image: nextcloudci/php7.1:php7.1-16
     environment:
       APP_NAME: spreed
@@ -123,7 +123,21 @@ steps:
       # Run phpunit tests
       - cd tests/php/
       - phpunit --configuration phpunit.xml
-  - name: phpunit-sqlite-php7.2
+
+trigger:
+  branch:
+    - master
+    - stable*
+  event:
+    - pull_request
+    - push
+
+---
+kind: pipeline
+name: unit-sqlite-php7.2
+
+steps:
+  - name: sqlite-php7.2
     image: nextcloudci/php7.2:php7.2-12
     environment:
       APP_NAME: spreed
@@ -139,7 +153,21 @@ steps:
       # Run phpunit tests
       - cd tests/php/
       - phpunit --configuration phpunit.xml
-  - name: phpunit-sqlite-php7.3
+
+trigger:
+  branch:
+    - master
+    - stable*
+  event:
+    - pull_request
+    - push
+
+---
+kind: pipeline
+name: unit-sqlite-php7.3
+
+steps:
+  - name: sqlite-php7.3
     image: nextcloudci/php7.3:php7.3-1
     environment:
       APP_NAME: spreed
@@ -166,7 +194,7 @@ trigger:
 
 ---
 kind: pipeline
-name: phpunit-mysql-php7.1
+name: unit-mysql-php7.1
 
 steps:
   - name: mysql-php7.1
@@ -210,7 +238,7 @@ trigger:
 
 ---
 kind: pipeline
-name: phpunit-mysql-php7.2
+name: unit-mysql-php7.2
 
 steps:
   - name: mysql-php7.2
@@ -254,7 +282,7 @@ trigger:
 
 ---
 kind: pipeline
-name: phpunit-mysql-php7.3
+name: unit-mysql-php7.3
 
 steps:
   - name: mysql-php7.3
@@ -298,7 +326,7 @@ trigger:
 
 ---
 kind: pipeline
-name: phpunit-pgsql-php7.1
+name: unit-pgsql-php7.1
 
 steps:
   - name: pgsql-php7.1
@@ -340,7 +368,7 @@ trigger:
 
 ---
 kind: pipeline
-name: phpunit-pgsql-php7.2
+name: unit-pgsql-php7.2
 
 steps:
   - name: pgsql-php7.2
@@ -382,7 +410,7 @@ trigger:
 
 ---
 kind: pipeline
-name: phpunit-pgsql-php7.3
+name: unit-pgsql-php7.3
 
 steps:
   - name: pgsql-php7.3
@@ -424,7 +452,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-sqlite-callapi
+name: int-sqlite-callapi
 
 steps:
   - name: integration-callapi
@@ -458,7 +486,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-sqlite-chat
+name: int-sqlite-chat
 
 steps:
   - name: integration-chat
@@ -492,7 +520,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-sqlite-conversation
+name: int-sqlite-conversation
 
 steps:
   - name: integration-conversation
@@ -526,7 +554,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-sqlite-sharing
+name: int-sqlite-sharing
 
 steps:
   - name: integration-sharing
@@ -560,7 +588,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-mysql-callapi
+name: int-mysql-callapi
 
 steps:
   - name: integration-callapi
@@ -604,7 +632,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-mysql-chat
+name: int-mysql-chat
 
 steps:
   - name: integration-chat
@@ -648,7 +676,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-mysql-conversation
+name: int-mysql-conversation
 
 steps:
   - name: integration-conversation
@@ -692,7 +720,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-mysql-sharing
+name: int-mysql-sharing
 
 steps:
   - name: integration-sharing
@@ -736,7 +764,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-pgsql-callapi
+name: int-pgsql-callapi
 
 steps:
   - name: integration-callapi
@@ -778,7 +806,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-pgsql-chat
+name: int-pgsql-chat
 
 steps:
   - name: integration-chat
@@ -820,7 +848,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-pgsql-conversation
+name: int-pgsql-conversation
 
 steps:
   - name: integration-conversation
@@ -862,7 +890,7 @@ trigger:
 
 ---
 kind: pipeline
-name: integration-pgsql-sharing
+name: int-pgsql-sharing
 
 steps:
   - name: integration-sharing
@@ -900,52 +928,52 @@ trigger:
     - stable*
   event:
 #    - pull_request
+    - push
+
+---
+kind: pipeline
+name: acc-sqlite-app-files
+
+steps:
+  - name: acceptance-app-files
+    image: nextcloudci/acceptance-php7.1:acceptance-php7.1-2
+    environment:
+      APP_NAME: spreed
+      CORE_BRANCH: master
+      SELENIUMHOST: selenium
+      TESTS_ACCEPTANCE: app-files
+    commands:
+      # Pre-setup steps
+      - git clone --depth 1 -b $CORE_BRANCH https://github.com/nextcloud/server ../server
+      - cp -R . ../server/apps/$APP_NAME
+      - cd ../server
+      - git submodule update --init
+      - ln --symbolic `pwd` /var/www/html
+
+      # Run acceptance tests
+      - tests/acceptance/run-local.sh --acceptance-tests-dir apps/spreed/tests/acceptance --timeout-multiplier 10 --nextcloud-server-domain acceptance --selenium-server $SELENIUMHOST:4444 allow-git-repository-modifications features/$TESTS_ACCEPTANCE.feature
+
+services:
+  - name: cache
+    image: redis
+  - name: selenium
+    image: selenium/standalone-firefox:2.53.1-beryllium
+    environment:
+      # Reduce default log level for Selenium server (INFO) as it is too
+      # verbose.
+      JAVA_OPTS: -Dselenium.LOGGER.level=WARNING
+
+trigger:
+  branch:
+    - master
+    - stable*
+  event:
+    - pull_request
     - push
 
 #---
 #kind: pipeline
-#name: acceptance-sqlite-app-files
-#
-#steps:
-#  - name: acceptance-app-files
-#    image: nextcloudci/acceptance-php7.1:acceptance-php7.1-2
-#    environment:
-#      APP_NAME: spreed
-#      CORE_BRANCH: master
-#      SELENIUMHOST: selenium
-#      TESTS_ACCEPTANCE: app-files
-#    commands:
-#      # Pre-setup steps
-#      - git clone --depth 1 -b $CORE_BRANCH https://github.com/nextcloud/server ../server
-#      - cp -R . ../server/apps/$APP_NAME
-#      - cd ../server
-#      - git submodule update --init
-#      - ln --symbolic `pwd` /var/www/html
-#
-#      # Run acceptance tests
-#      - tests/acceptance/run-local.sh --acceptance-tests-dir apps/spreed/tests/acceptance --timeout-multiplier 10 --nextcloud-server-domain acceptance --selenium-server $SELENIUMHOST:4444 allow-git-repository-modifications features/$TESTS_ACCEPTANCE.feature
-#
-#services:
-#  - name: cache
-#    image: redis
-#  - name: selenium
-#    image: selenium/standalone-firefox:2.53.1-beryllium
-#    environment:
-#      # Reduce default log level for Selenium server (INFO) as it is too
-#      # verbose.
-#      JAVA_OPTS: -Dselenium.LOGGER.level=WARNING
-#
-#trigger:
-#  branch:
-#    - master
-#    - stable*
-#  event:
-#    - pull_request
-#    - push
-#
-#---
-#kind: pipeline
-#name: acceptance-sqlite-chat
+#name: acc-sqlite-chat
 #
 #steps:
 #  - name: acceptance-chat
@@ -986,7 +1014,7 @@ trigger:
 #
 #---
 #kind: pipeline
-#name: acceptance-sqlite-conversation
+#name: acc-sqlite-conversation
 #
 #steps:
 #  - name: acceptance-conversation
@@ -1027,7 +1055,7 @@ trigger:
 #
 #---
 #kind: pipeline
-#name: acceptance-sqlite-public-share-auth
+#name: acc-sqlite-public-share-auth
 #
 #steps:
 #  - name: acceptance-public-share-auth
@@ -1068,7 +1096,7 @@ trigger:
 #
 #---
 #kind: pipeline
-#name: acceptance-sqlite-room-shares
+#name: acc-sqlite-room-shares
 #
 #steps:
 #  - name: acceptance-room-shares
