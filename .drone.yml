@@ -626,6 +626,7 @@ trigger:
   branch:
     - master
     - stable*
+    - integration/*
   event:
 #    - pull_request
     - push
@@ -670,6 +671,7 @@ trigger:
   branch:
     - master
     - stable*
+    - integration/*
   event:
 #    - pull_request
     - push
@@ -714,6 +716,7 @@ trigger:
   branch:
     - master
     - stable*
+    - integration/*
   event:
 #    - pull_request
     - push
@@ -758,6 +761,7 @@ trigger:
   branch:
     - master
     - stable*
+    - integration/*
   event:
 #    - pull_request
     - push
@@ -800,6 +804,7 @@ trigger:
   branch:
     - master
     - stable*
+      - integration/*
   event:
 #    - pull_request
     - push
@@ -842,6 +847,7 @@ trigger:
   branch:
     - master
     - stable*
+    - integration/*
   event:
 #    - pull_request
     - push
@@ -884,6 +890,7 @@ trigger:
   branch:
     - master
     - stable*
+    - integration/*
   event:
 #    - pull_request
     - push
@@ -926,6 +933,7 @@ trigger:
   branch:
     - master
     - stable*
+    - integration/*
   event:
 #    - pull_request
     - push
