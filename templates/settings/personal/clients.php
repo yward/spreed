@@ -26,7 +26,7 @@
 ?>
 
 <div id="clients-talk" class="followupsection clientsbox">
-	<h2><?php p($l->t('%s Talk on your mobile devices', [$theme->getName()]));?></h2>
+	<h2><?php p($l->t('%s Talk on your mobile devices', ['Nextcloud']));?></h2>
 
 	<p><?php p($l->t('Join conversations at any time, any where, on any device.')); ?></p>
 
