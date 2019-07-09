@@ -29,6 +29,7 @@ use OCA\Spreed\Model\Message;
 use OCA\Spreed\Notification\Notifier;
 use OCA\Spreed\Participant;
 use OCA\Spreed\Room;
+use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\Comments\IComment;
 use OCP\Comments\ICommentsManager;
 use OCP\IL10N;
@@ -62,6 +63,8 @@ class NotifierTest extends \Test\TestCase {
 	protected $commentsManager;
 	/** @var MessageParser|MockObject */
 	protected $messageParser;
+	/** @var ITimeFactory|MockObject */
+	protected $timeFactory;
 	/** @var Definitions|MockObject */
 	protected $definitions;
 	/** @var Notifier */
@@ -79,6 +82,7 @@ class NotifierTest extends \Test\TestCase {
 		$this->notificationManager = $this->createMock(INotificationManager::class);
 		$this->commentsManager = $this->createMock(ICommentsManager::class);
 		$this->messageParser = $this->createMock(MessageParser::class);
+		$this->timeFactory = $this->createMock(ITimeFactory::class);
 		$this->definitions = $this->createMock(Definitions::class);
 
 		$this->notifier = new Notifier(
@@ -91,6 +95,7 @@ class NotifierTest extends \Test\TestCase {
 			$this->notificationManager,
 			$this->commentsManager,
 			$this->messageParser,
+			$this->timeFactory,
 			$this->definitions
 		);
 	}

@@ -30,6 +30,7 @@ use OCA\Spreed\Exceptions\RoomNotFoundException;
 use OCA\Spreed\Manager;
 use OCA\Spreed\Participant;
 use OCA\Spreed\Room;
+use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\Comments\ICommentsManager;
 use OCP\Comments\NotFoundException;
 use OCP\IL10N;
@@ -65,6 +66,8 @@ class Notifier implements INotifier {
 	protected $commentManager;
 	/** @var MessageParser */
 	protected $messageParser;
+	/** @var ITimeFactory */
+	protected $timeFactory;
 	/** @var Definitions */
 	protected $definitions;
 
@@ -77,6 +80,7 @@ class Notifier implements INotifier {
 								INotificationManager $notificationManager,
 								ICommentsManager $commentManager,
 								MessageParser $messageParser,
+								ITimeFactory $timeFactory,
 								Definitions $definitions) {
 		$this->lFactory = $lFactory;
 		$this->url = $url;
@@ -87,6 +91,7 @@ class Notifier implements INotifier {
 		$this->notificationManager = $notificationManager;
 		$this->commentManager = $commentManager;
 		$this->messageParser = $messageParser;
+		$this->timeFactory = $timeFactory;
 		$this->definitions = $definitions;
 	}
 
@@ -165,6 +170,16 @@ class Notifier implements INotifier {
 	protected function parseChatMessage(INotification $notification, Room $room, Participant $participant, IL10N $l): INotification {
 		if ($notification->getObjectType() !== 'chat') {
 			throw new \InvalidArgumentException('Unknown object type');
+		}
+
+		if ($participant->getSessionId()) {
+			$pingAge = $this->timeFactory->getTime() - $participant->getLastPing();
+			$messageAge = $this->timeFactory->getTime() - $notification->getDateTime()->getTimestamp();
+			if ($messageAge > 60 && $pingAge < $messageAge) {
+				// Remove chat notifications after 60 seconds when the user has a active session in the conversation
+				$this->notificationManager->markProcessed($notification);
+				throw new \InvalidArgumentException('Outdated notification');
+			}
 		}
 
 		$subjectParameters = $notification->getSubjectParameters();
