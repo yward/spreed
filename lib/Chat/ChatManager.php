@@ -226,9 +226,6 @@ class ChatManager {
 	 *         timeout expired.
 	 */
 	public function waitForNewMessages(Room $chat, int $offset, int $limit, int $timeout, ?IUser $user): array {
-		if ($user instanceof IUser) {
-			$this->notifier->markMentionNotificationsRead($chat, $user->getUID());
-		}
 		$elapsedTime = 0;
 
 		$comments = $this->commentsManager->getForObjectSince('chat', (string) $chat->getId(), $offset, 'asc', $limit);
