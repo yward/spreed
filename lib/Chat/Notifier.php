@@ -132,11 +132,6 @@ class Notifier {
 				continue;
 			}
 
-			if ($participant->getSessionId() !== '0') {
-				// User is online
-				continue;
-			}
-
 			$notification->setUser($participant->getUser());
 			$this->notificationManager->notify($notification);
 		}
@@ -155,11 +150,6 @@ class Notifier {
 				}
 
 				if (\in_array($participant->getUser(), $mentionedUsers, true)) {
-					continue;
-				}
-
-				if ($participant->getSessionId() !== '0') {
-					// User is online
 					continue;
 				}
 
