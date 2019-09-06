@@ -42,6 +42,19 @@ class Listener {
 			/** @var UserMention $parser */
 			$parser = \OC::$server->query(UserMention::class);
 			$parser->parseMessage($message);
+		}, -99);
+
+		$dispatcher->addListener(MessageParser::class . '::parseMessage', function(GenericEvent $event) {
+			/** @var Message $message */
+			$message = $event->getSubject();
+
+			if ($message->getMessageType() !== 'comment') {
+				return;
+			}
+
+			/** @var LinkParser $parser */
+			$parser = \OC::$server->query(LinkParser::class);
+			$parser->parseMessage($message);
 		}, -100);
 
 		$dispatcher->addListener(MessageParser::class . '::parseMessage', function(GenericEvent $event) {
