@@ -203,13 +203,6 @@ export default {
 		isInLobby,
 	],
 
-	props: {
-		showChatInSidebar: {
-			type: Boolean,
-			required: true,
-		},
-	},
-
 	data() {
 		return {
 			contactsLoading: false,
@@ -236,6 +229,9 @@ export default {
 		},
 		token() {
 			return this.$store.getters.getToken()
+		},
+		showChatInSidebar() {
+			return this.$store.getters.isChatInSidebar()
 		},
 		conversation() {
 			if (this.$store.getters.conversations[this.token]) {

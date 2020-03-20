@@ -83,6 +83,9 @@ export default {
 
 		iconMenuPeople() {
 			if (this.forceWhiteIcons) {
+				if (this.$store.getters.hiddenChatHasUnreadMessages()) {
+					return 'forced-white icon-menu-people pulse'
+				}
 				return 'forced-white icon-menu-people'
 			}
 			return 'icon-menu-people'
@@ -153,5 +156,22 @@ export default {
 		align-self: center;
 	}
 
+	.pulse {
+		animation: pulse 2s infinite;
+		will-change: transform;
+	}
+
+	@keyframes pulse {
+		0% {
+			opacity: .5;
+		}
+		50% {
+			opacity: 1;
+		}
+		100% {
+			opacity: .5;
+		}
+	}
 }
+
 </style>

@@ -22,11 +22,19 @@
 
 const state = {
 	show: true,
+	chat: false,
+	unread: false,
 }
 
 const getters = {
 	getSidebarStatus: (state) => () => {
 		return state.show
+	},
+	isChatInSidebar: (state) => () => {
+		return state.chat
+	},
+	hiddenChatHasUnreadMessages: (state) => () => {
+		return !state.show && state.chat && state.unread
 	},
 }
 
@@ -47,6 +55,24 @@ const mutations = {
 	hideSidebar(state) {
 		state.show = false
 	},
+
+	/**
+	 * Sets the current visibility state of the chat
+	 *
+	 * @param {object} state current store state;
+	 * @param {boolean} value the value;
+	 */
+	setChatInSidebar(state, value) {
+		state.chat = value
+	},
+
+	/**
+	 * @param {object} state current store state;
+	 * @param {boolean} value the value;
+	 */
+	setHasUnreadMessages(state, value) {
+		state.unread = value
+	},
 }
 
 const actions = {
@@ -58,6 +84,7 @@ const actions = {
 	 */
 	showSidebar(context) {
 		context.commit('showSidebar')
+		context.commit('setHasUnreadMessages', false)
 	},
 	/**
 	 * Hides the sidebar
@@ -66,6 +93,25 @@ const actions = {
 	 */
 	hideSidebar(context) {
 		context.commit('hideSidebar')
+	},
+
+	/**
+	 * Sets the current visibility state of the chat
+	 *
+	 * @param {object} context the context object;
+	 * @param {boolean} value the value;
+	 */
+	setChatInSidebar(context, value) {
+		context.commit('setChatInSidebar', value)
+		context.commit('setHasUnreadMessages', false)
+	},
+
+	/**
+	 * @param {object} context the context object;
+	 * @param {boolean} value the value;
+	 */
+	setHasUnreadMessages(context, value) {
+		context.commit('setHasUnreadMessages', value)
 	},
 }
 

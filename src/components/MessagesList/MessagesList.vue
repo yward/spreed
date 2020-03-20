@@ -424,18 +424,24 @@ export default {
 			// Make the request
 			try {
 				const messages = await request({ token, lastKnownMessageId })
+				let newMessages = false
 				// Process each messages and adds it to the store
 				messages.data.ocs.data.forEach(message => {
 					if (message.actorType === 'guests') {
 						this.$store.dispatch('forceGuestName', message)
 					}
 					this.$store.dispatch('processMessage', message)
+					newMessages = true
 				})
 
 				this.$store.dispatch('setLastKnownMessageId', {
 					token: token,
 					id: parseInt(messages.headers['x-chat-last-given'], 10),
 				})
+
+				if (newMessages && this.$store.getters.isChatInSidebar() && !this.$store.getters.getSidebarStatus()) {
+					this.$store.dispatch('setHasUnreadMessages', true)
+				}
 
 				// Scroll to the last message if sticky
 				if (this.isSticky) {

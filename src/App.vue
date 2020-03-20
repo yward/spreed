@@ -25,8 +25,7 @@
 		<AppContent>
 			<router-view />
 		</AppContent>
-		<RightSidebar
-			:show-chat-in-sidebar="isInCall" />
+		<RightSidebar />
 		<PreventUnload :when="isInCall" />
 	</Content>
 </template>
@@ -154,6 +153,9 @@ export default {
 			}
 
 			this.setPageTitle(this.getConversationName(this.token), this.atLeastOneLastMessageIdChanged)
+		},
+		isInCall(value) {
+			this.$store.dispatch('setChatInSidebar', value)
 		},
 	},
 
