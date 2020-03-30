@@ -27,7 +27,14 @@
 				:is-searching="isSearching"
 				@input="debounceFetchSearchResults"
 				@abort-search="abortSearch" />
-			<NewGroupConversation />
+			<NewGroupConversation>
+				<Actions>
+					<ActionButton
+						class="toggle"
+						icon="icon-add"
+						:aria-label="t('spreed','Create a new group conversation')" />
+				</Actions>
+			</NewGroupConversation>
 		</div>
 		<ul class="left-sidebar__list">
 			<Caption v-if="isSearching"
@@ -104,6 +111,8 @@ import { CONVERSATION } from '../../constants'
 import { loadState } from '@nextcloud/initial-state'
 import NewGroupConversation from './NewGroupConversation/NewGroupConversation'
 import { getFilePickerBuilder } from '@nextcloud/dialogs'
+import Actions from '@nextcloud/vue/dist/Components/Actions'
+import ActionButton from '@nextcloud/vue/dist/Components/ActionButton'
 
 export default {
 
@@ -118,6 +127,8 @@ export default {
 		Hint,
 		SearchBox,
 		NewGroupConversation,
+		Actions,
+		ActionButton,
 	},
 
 	data() {

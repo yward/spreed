@@ -20,16 +20,14 @@
 -->
 
 <template>
-	<div>
+	<div class="trigger"
+		@click="showModal">
 		<!-- Tooltip -->
-		<Popover trigger="hover" placement="bottom">
-			<Actions slot="trigger">
-				<ActionButton
-					class="toggle"
-					icon="icon-add"
-					:aria-label="t('spreed','Create a new group conversation')"
-					@click="showModal" />
-			</Actions>
+		<Popover
+			trigger="hover"
+			:disabled="!hasTooltip"
+			placement="bottom">
+			<slot slot="trigger" />
 			<p>{{ t('spreed','Create a new group conversation') }}</p>
 		</Popover>
 		<!-- New group form -->
@@ -123,8 +121,6 @@
 <script>
 
 import Modal from '@nextcloud/vue/dist/Components/Modal'
-import Actions from '@nextcloud/vue/dist/Components/Actions'
-import ActionButton from '@nextcloud/vue/dist/Components/ActionButton'
 import Popover from '@nextcloud/vue/dist/Components/Popover'
 import SetContacts from './SetContacts/SetContacts'
 import SetConversationName from './SetConversationName/SetConversationName'
@@ -145,14 +141,19 @@ export default {
 
 	components: {
 		Modal,
-		Actions,
-		ActionButton,
 		SetContacts,
 		SetConversationName,
 		SetConversationType,
 		Confirmation,
 		Popover,
 		PasswordProtect,
+	},
+
+	props: {
+		hasTooltip: {
+			type: Boolean,
+			default: true,
+		},
 	},
 
 	data() {
@@ -350,5 +351,8 @@ it back */
 	&__button-right {
 		margin-left:auto;
 	}
+}
+.trigger {
+	margin: auto;
 }
 </style>
