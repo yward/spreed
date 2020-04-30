@@ -21,12 +21,15 @@
  */
 
 import axios from '@nextcloud/axios'
-import { generateOcsUrl } from '@nextcloud/router'
+import {
+	generateOcsUrl,
+	generateUrl,
+} from '@nextcloud/router'
 import {
 	signalingJoinConversation,
 	signalingLeaveConversation,
 } from '../utils/webrtc/index'
-import { EventBus } from '../services/EventBus'
+import { EventBus } from './EventBus'
 
 /**
  * Joins the current user to a conversation specified with
@@ -45,6 +48,28 @@ const joinConversation = async(token) => {
 		// return response
 	} catch (error) {
 		console.debug(error)
+		if (error.response.status === 409) {
+			// Conflict, user is already active in the conversation
+			await OC.dialogs.confirmDestructive(
+				t('spreed', 'You are already active in this conversation in another window or device. Do you want to start a new session here and stop the old session?'),
+				t('spreed', 'Session'),
+				{
+					type: OC.dialogs.YES_NO_BUTTONS,
+					confirm: t('spreed', 'Start new session'),
+					confirmClasses: 'error',
+					cancel: t('spreed', 'Leave this page'),
+				},
+				decision => {
+					if (!decision) {
+						// Cancel
+						OC.redirect(generateUrl('/apps/spreed'))
+					} else {
+						// Confirm
+						signalingJoinConversation(token, true)
+					}
+				}
+			)
+		}
 	}
 }
 

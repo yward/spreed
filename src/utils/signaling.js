@@ -194,10 +194,10 @@ Signaling.Base.prototype.leaveCurrentCall = function() {
 	})
 }
 
-Signaling.Base.prototype.joinRoom = function(token, password) {
+Signaling.Base.prototype.joinRoom = function(token, force) {
 	return new Promise((resolve, reject) => {
 		axios.post(generateOcsUrl('apps/spreed/api/v1/room', 2) + token + '/participants/active', {
-			password: password,
+			force: force ? 1 : 0,
 		})
 			.then(function(result) {
 				console.debug('Joined', result)

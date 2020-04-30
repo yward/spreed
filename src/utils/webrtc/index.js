@@ -105,11 +105,12 @@ function setupWebRtc() {
  * Join the given conversation on the respective signaling server with the given sessionId
  *
  * @param {string} token Conversation to join
+ * @param {boolean} [force] Force a new session kicking the old one
  * @returns {Promise<void>}
  */
-async function signalingJoinConversation(token) {
+async function signalingJoinConversation(token, force) {
 	await getSignaling()
-	await signaling.joinRoom(token)
+	await signaling.joinRoom(token, force || false)
 }
 
 /**
