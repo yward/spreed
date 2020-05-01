@@ -27,8 +27,8 @@
 					<template v-for="callParticipantModel in reversedCallParticipantModels">
 						<Video
 							:key="callParticipantModel.attributes.peerId"
-							:token="token"
 							v-observe-visibility="(isVisible, entry) => visibilityChanged(isVisible, entry, callParticipantModel.attributes.peerId)"
+							:token="token"
 							:model="callParticipantModel"
 							:shared-data="sharedDatas[callParticipantModel.attributes.peerId]"
 							:use-constrained-layout="useConstrainedLayout"
@@ -372,10 +372,10 @@ export default {
 
 .incoming-videos {
 	overflow-x: scroll;
-	justify-content: flex-end;
 	flex-grow: 1;
 	flex-direction: row;
 	display: flex;
+	width: 100%;
 }
 
 .local-video {
@@ -522,7 +522,9 @@ export default {
 	overflow: hidden;
 	left: 0;
 	top: 0;
+	height: calc(100% - 200px);
 	z-index: 1;
+
 }
 .videoContainer.promoted ::v-deep video,
 .participants-2 .videoContainer:not(.videoView) ::v-deep video {
