@@ -518,14 +518,17 @@ export default {
 .videoContainer.promoted {
 	position: absolute;
 	width: 100%;
-	height: 100%;
 	overflow: hidden;
 	left: 0;
 	top: 0;
 	height: calc(100% - 200px);
 	z-index: 1;
-
 }
+
+.participants-2 .videoContainer {
+	height: 100%;
+}
+
 .videoContainer.promoted ::v-deep video,
 .participants-2 .videoContainer:not(.videoView) ::v-deep video {
 	position: absolute;
