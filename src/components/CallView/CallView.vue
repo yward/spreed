@@ -365,15 +365,17 @@ export default {
 }
 
 .videos-stripe {
-	height: 300px;
+	height: 200px;
 	display: flex;
 	width: 100%;
 }
 
 .incoming-videos {
-	overflow-y: scroll;
+	overflow-x: scroll;
 	justify-content: flex-end;
 	flex-grow: 1;
+	flex-direction: row;
+	display: flex;
 }
 
 .local-video {
