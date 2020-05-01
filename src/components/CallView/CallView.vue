@@ -28,6 +28,7 @@
 						<Video
 							:key="callParticipantModel.attributes.peerId"
 							:token="token"
+							v-observe-visibility="(isVisible, entry) => visibilityChanged(isVisible, entry, callParticipantModel.attributes.peerId)"
 							:model="callParticipantModel"
 							:shared-data="sharedDatas[callParticipantModel.attributes.peerId]"
 							:use-constrained-layout="useConstrainedLayout"
@@ -325,6 +326,14 @@ export default {
 			}
 
 			this.sharedDatas[this.screens[0]].screenVisible = true
+		},
+
+		visibilityChanged(isVisible, entry, peerId) {
+			if (isVisible) {
+				this.sharedDatas[peerId].videoEnabled = true
+			} else {
+				this.sharedDatas[peerId].videoEnabled = false
+			}
 		},
 
 	},
