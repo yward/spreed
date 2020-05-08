@@ -55,21 +55,21 @@ class Demote extends Base {
 	protected function configure(): void {
 		$this
 			->setName('talk:room:demote')
-			->setDescription('Demotes participants of a room to regular users')
+			->setDescription('Demotes users to regular users')
 			->addArgument(
 				'token',
 				InputArgument::REQUIRED,
 				'Token of the room in which users should be demoted'
 			)->addArgument(
-				'participant',
+				'user',
 				InputArgument::REQUIRED | InputArgument::IS_ARRAY,
-				'Demotes the given participants of the room to regular users'
+				'Demotes the given users to regular users'
 			);
 	}
 
 	protected function execute(InputInterface $input, OutputInterface $output): ?int {
 		$token = $input->getArgument('token');
-		$users = $input->getArgument('participant');
+		$users = $input->getArgument('user');
 
 		try {
 			$room = $this->manager->getRoomByToken($token);
@@ -79,7 +79,7 @@ class Demote extends Base {
 		}
 
 		if (!in_array($room->getType(), [Room::GROUP_CALL, Room::PUBLIC_CALL], true)) {
-			$output->writeln('<error>Room is no group call.</error>');
+			$output->writeln('<error>Room is no group conversation.</error>');
 			return 1;
 		}
 
@@ -90,7 +90,7 @@ class Demote extends Base {
 			return 1;
 		}
 
-		$output->writeln('<info>Users successfully remove from room.</info>');
+		$output->writeln('<info>Users demoted.</info>');
 		return 0;
 	}
 }

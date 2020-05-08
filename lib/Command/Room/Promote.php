@@ -55,21 +55,21 @@ class Promote extends Base {
 	protected function configure(): void {
 		$this
 			->setName('talk:room:promote')
-			->setDescription('Promotes participants of a room to moderators')
+			->setDescription('Promotes users to moderators')
 			->addArgument(
 				'token',
 				InputArgument::REQUIRED,
 				'Token of the room in which users should be promoted'
 			)->addArgument(
-				'participant',
+				'user',
 				InputArgument::REQUIRED | InputArgument::IS_ARRAY,
-				'Promotes the given participants of the room to moderators'
+				'Promotes the given users to moderators'
 			);
 	}
 
 	protected function execute(InputInterface $input, OutputInterface $output): ?int {
 		$token = $input->getArgument('token');
-		$users = $input->getArgument('participant');
+		$users = $input->getArgument('user');
 
 		try {
 			$room = $this->manager->getRoomByToken($token);
@@ -79,7 +79,7 @@ class Promote extends Base {
 		}
 
 		if (!in_array($room->getType(), [Room::GROUP_CALL, Room::PUBLIC_CALL], true)) {
-			$output->writeln('<error>Room is no group call.</error>');
+			$output->writeln('<error>Room is no group conversation.</error>');
 			return 1;
 		}
 
@@ -90,7 +90,7 @@ class Promote extends Base {
 			return 1;
 		}
 
-		$output->writeln('<info>Users successfully added to room.</info>');
+		$output->writeln('<info>Users promoted.</info>');
 		return 0;
 	}
 }

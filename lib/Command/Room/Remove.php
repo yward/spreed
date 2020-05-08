@@ -79,7 +79,7 @@ class Remove extends Base {
 		}
 
 		if (!in_array($room->getType(), [Room::GROUP_CALL, Room::PUBLIC_CALL], true)) {
-			$output->writeln('<error>Room is no group call.</error>');
+			$output->writeln('<error>Room is no group conversation.</error>');
 			return 1;
 		}
 
