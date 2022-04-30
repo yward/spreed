@@ -20,41 +20,38 @@
 -->
 
 <template>
-	<div
-		class="participants-search-results"
+	<div class="participants-search-results"
 		:class="{'scrollable': scrollable }">
 		<template v-if="addableUsers.length !== 0">
-			<Caption
-				:title="t('spreed', 'Add contacts')" />
-			<ParticipantsList
-				:items="addableUsers"
+			<AppNavigationCaption :title="t('spreed', 'Add users')" />
+			<ParticipantsList :items="addableUsers"
 				@click="handleClickParticipant" />
 		</template>
 
 		<template v-if="addableGroups.length !== 0">
-			<Caption
-				:title="t('spreed', 'Add groups')" />
-			<ParticipantsList
-				:items="addableGroups"
+			<AppNavigationCaption :title="t('spreed', 'Add groups')" />
+			<ParticipantsList :items="addableGroups"
 				@click="handleClickParticipant" />
 		</template>
 
 		<template v-if="addableEmails.length !== 0">
-			<Caption
-				:title="t('spreed', 'Add emails')" />
-			<ParticipantsList
-				:items="addableEmails"
+			<AppNavigationCaption :title="t('spreed', 'Add emails')" />
+			<ParticipantsList :items="addableEmails"
 				@click="handleClickParticipant" />
 		</template>
 
 		<template v-if="addableCircles.length !== 0">
-			<Caption
-				:title="t('spreed', 'Add circles')" />
-			<ParticipantsList
-				:items="addableCircles"
+			<AppNavigationCaption :title="t('spreed', 'Add circles')" />
+			<ParticipantsList :items="addableCircles"
 				@click="handleClickParticipant" />
 		</template>
-		<Caption v-if="sourcesWithoutResults"
+
+		<template v-if="addableRemotes.length !== 0">
+			<AppNavigationCaption :title="t('spreed', 'Add federated users')" />
+			<ParticipantsList :items="addableRemotes"
+				@click="handleClickParticipant" />
+		</template>
+		<AppNavigationCaption v-if="sourcesWithoutResults"
 			:title="sourcesWithoutResultsList" />
 		<Hint v-if="contactsLoading" :hint="t('spreed', 'Searching …')" />
 		<Hint v-if="!contactsLoading && sourcesWithoutResults" :hint="t('spreed', 'No search results')" />
@@ -70,13 +67,12 @@
 				to display the results of a search. Upon clicking on it, an event is
 				emitted to the parent component in order to be able to focus on it's
 				input field -->
-			<div
-				v-if="displaySearchHint && !noResults"
+			<div v-if="displaySearchHint && !noResults"
 				class="participants-search-results__hint"
 				@click="handleClickHint">
 				<div class="icon-contacts-dark set-contacts__icon" />
 				<p>
-					{{ t('spreed', 'Search for more contacts') }}
+					{{ t('spreed', 'Search for more users') }}
 				</p>
 			</div>
 		</template>
@@ -85,7 +81,7 @@
 
 <script>
 import ParticipantsList from '../ParticipantsList/ParticipantsList'
-import Caption from '../../../Caption'
+import AppNavigationCaption from '@nextcloud/vue/dist/Components/AppNavigationCaption'
 import Hint from '../../../Hint'
 
 export default {
@@ -93,7 +89,7 @@ export default {
 
 	components: {
 		ParticipantsList,
-		Caption,
+		AppNavigationCaption,
 		Hint,
 	},
 
@@ -131,7 +127,8 @@ export default {
 			type: Boolean,
 			default: false,
 		},
-		/** If so, this component will add clicked participant to the selected
+		/**
+		 * If so, this component will add clicked participant to the selected
 		 * participants store;
 		 */
 		selectable: {
@@ -151,15 +148,15 @@ export default {
 			if (!this.addableUsers.length) {
 				if (!this.addableGroups.length) {
 					if (this.isCirclesEnabled && !this.addableCircles.length) {
-						return t('spreed', 'Add contacts, groups or circles')
+						return t('spreed', 'Add users, groups or circles')
 					} else {
-						return t('spreed', 'Add contacts or groups')
+						return t('spreed', 'Add users or groups')
 					}
 				} else {
 					if (this.isCirclesEnabled && !this.addableCircles.length) {
-						return t('spreed', 'Add contacts or circles')
+						return t('spreed', 'Add users or circles')
 					} else {
-						return t('spreed', 'Add contacts')
+						return t('spreed', 'Add users')
 					}
 				}
 			} else {
@@ -213,6 +210,12 @@ export default {
 			}
 			return []
 		},
+		addableRemotes() {
+			if (this.searchResults !== []) {
+				return this.searchResults.filter((item) => item.source === 'remotes')
+			}
+			return []
+		},
 		// Determines whether this component is used in the new group conversation creation
 		// context
 		isNewGroupConversation() {
@@ -232,7 +235,7 @@ export default {
 
 		},
 		handleClickHint() {
-			this.$emit('clickSearchHint')
+			this.$emit('click-search-hint')
 		},
 	},
 }

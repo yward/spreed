@@ -23,30 +23,13 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Chat;
 
+use OCP\DB\Exception;
 use OC\Comments\Comment;
 use OC\Comments\Manager;
-use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\Comments\IComment;
 use OCP\DB\QueryBuilder\IQueryBuilder;
-use OCP\IConfig;
-use OCP\IDBConnection;
-use OCP\ILogger;
 
 class CommentsManager extends Manager {
-
-	/** @var ITimeFactory */
-	protected $timeFactory;
-
-	public function __construct(
-		IDBConnection $db,
-		ILogger $logger,
-		IConfig $config,
-		ITimeFactory $timeFactory
-	) {
-		parent::__construct($db, $logger, $config);
-		$this->timeFactory = $timeFactory;
-	}
-
 	/**
 	 * @param array $data
 	 * @return IComment
@@ -60,170 +43,53 @@ class CommentsManager extends Manager {
 	}
 
 	/**
-	 * @param string $objectType the object type, e.g. 'files'
-	 * @param string $objectId the id of the object
-	 * @param int $lastKnownCommentId the last known comment (will be used as offset)
-	 * @param string $sortDirection direction of the comments (`asc` or `desc`)
-	 * @param int $limit optional, number of maximum comments to be returned. if
-	 * set to 0, all comments are returned.
-	 * @param bool $includeLastKnown
+	 * @param string[] $ids
 	 * @return IComment[]
-	 * @return array
+	 * @throws Exception
 	 */
-	public function getForObjectSince(
-		string $objectType,
-		string $objectId,
-		int $lastKnownCommentId,
-		string $sortDirection = 'asc',
-		int $limit = 30,
-		bool $includeLastKnown = false
-	): array {
-		$comments = [];
+	public function getCommentsById(array $ids): array {
+		$commentIds = array_map('intval', $ids);
 
 		$query = $this->dbConn->getQueryBuilder();
 		$query->select('*')
 			->from('comments')
-			->where($query->expr()->eq('object_type', $query->createNamedParameter($objectType)))
-			->andWhere($query->expr()->eq('object_id', $query->createNamedParameter($objectId)))
-			->orderBy('creation_timestamp', $sortDirection === 'desc' ? 'DESC' : 'ASC')
-			->addOrderBy('id', $sortDirection === 'desc' ? 'DESC' : 'ASC');
+			->where($query->expr()->in('id', $query->createNamedParameter($commentIds, IQueryBuilder::PARAM_INT_ARRAY)));
 
-		if ($limit > 0) {
-			$query->setMaxResults($limit);
+		$comments = [];
+		$result = $query->execute();
+		while ($row = $result->fetch()) {
+			$comments[(int) $row['id']] = $this->getCommentFromData($row);
 		}
-
-		$lastKnownComment = $lastKnownCommentId > 0 ? $this->getLastKnownComment(
-			$objectType,
-			$objectId,
-			$lastKnownCommentId
-		) : null;
-		if ($lastKnownComment instanceof IComment) {
-			$lastKnownCommentDateTime = $lastKnownComment->getCreationDateTime();
-			if ($sortDirection === 'desc') {
-				$idComparison = $includeLastKnown ? 'lte' : 'lt';
-				$query->andWhere(
-					$query->expr()->orX(
-						$query->expr()->lt(
-							'creation_timestamp',
-							$query->createNamedParameter($lastKnownCommentDateTime, IQueryBuilder::PARAM_DATE),
-							IQueryBuilder::PARAM_DATE
-						),
-						$query->expr()->andX(
-							$query->expr()->eq(
-								'creation_timestamp',
-								$query->createNamedParameter($lastKnownCommentDateTime, IQueryBuilder::PARAM_DATE),
-								IQueryBuilder::PARAM_DATE
-							),
-							$query->expr()->$idComparison('id', $query->createNamedParameter($lastKnownCommentId))
-						)
-					)
-				);
-			} else {
-				$idComparison = $includeLastKnown ? 'gte' : 'gt';
-				$query->andWhere(
-					$query->expr()->orX(
-						$query->expr()->gt(
-							'creation_timestamp',
-							$query->createNamedParameter($lastKnownCommentDateTime, IQueryBuilder::PARAM_DATE),
-							IQueryBuilder::PARAM_DATE
-						),
-						$query->expr()->andX(
-							$query->expr()->eq(
-								'creation_timestamp',
-								$query->createNamedParameter($lastKnownCommentDateTime, IQueryBuilder::PARAM_DATE),
-								IQueryBuilder::PARAM_DATE
-							),
-							$query->expr()->$idComparison('id', $query->createNamedParameter($lastKnownCommentId))
-						)
-					)
-				);
-			}
-		}
-
-		$resultStatement = $query->execute();
-		while ($data = $resultStatement->fetch()) {
-			$comment = $this->getCommentFromData($data);
-			$this->cache($comment);
-			$comments[] = $comment;
-		}
-		$resultStatement->closeCursor();
+		$result->closeCursor();
 
 		return $comments;
 	}
 
 	/**
-	 * @param string $objectType
-	 * @param string $objectId
-	 * @param string $verb
 	 * @param string $actorType
-	 * @param string[] $actors
+	 * @param string $actorId
+	 * @param string[] $messageIds
 	 * @return array
+	 * @psalm-return array<int, string[]>
 	 */
-	public function getLastCommentDateByActor(
-		string $objectType,
-		string $objectId,
-		string $verb,
-		string $actorType,
-		array $actors
-	): array {
-		$lastComments = [];
+	public function retrieveReactionsByActor(string $actorType, string $actorId, array $messageIds): array {
+		$commentIds = array_map('intval', $messageIds);
 
 		$query = $this->dbConn->getQueryBuilder();
-		$query->select('actor_id')
-			->selectAlias($query->createFunction('MAX(' . $query->getColumnName('creation_timestamp') . ')'), 'last_comment')
-			->from('comments')
-			->where($query->expr()->eq('object_type', $query->createNamedParameter($objectType)))
-			->andWhere($query->expr()->eq('object_id', $query->createNamedParameter($objectId)))
-			->andWhere($query->expr()->eq('verb', $query->createNamedParameter($verb)))
-			->andWhere($query->expr()->eq('actor_type', $query->createNamedParameter($actorType)))
-			->andWhere($query->expr()->in('actor_id', $query->createNamedParameter($actors, IQueryBuilder::PARAM_STR_ARRAY)))
-			->groupBy('actor_id');
+		$query->select('*')
+			->from('reactions')
+			->where($query->expr()->eq('actor_type', $query->createNamedParameter($actorType)))
+			->andWhere($query->expr()->eq('actor_id', $query->createNamedParameter($actorId)))
+			->andWhere($query->expr()->in('parent_id', $query->createNamedParameter($commentIds, IQueryBuilder::PARAM_INT_ARRAY)));
 
-		$result = $query->execute();
+		$reactions = [];
+		$result = $query->executeQuery();
 		while ($row = $result->fetch()) {
-			$lastComments[$row['actor_id']] = $this->timeFactory->getDateTime($row['last_comment']);
+			$reactions[(int) $row['parent_id']] ??= [];
+			$reactions[(int) $row['parent_id']][] = $row['reaction'];
 		}
 		$result->closeCursor();
 
-		return $lastComments;
-	}
-
-	public function getNumberOfCommentsForObjectSinceComment(string $objectType, string $objectId, int $lastRead, string $verb = ''): int {
-		$query = $this->dbConn->getQueryBuilder();
-		$query->selectAlias($query->createFunction('COUNT(' . $query->getColumnName('id') . ')'), 'num_messages')
-			->from('comments')
-			->where($query->expr()->eq('object_type', $query->createNamedParameter($objectType)))
-			->andWhere($query->expr()->eq('object_id', $query->createNamedParameter($objectId)))
-			->andWhere($query->expr()->gt('id', $query->createNamedParameter($lastRead)));
-
-		if ($verb !== '') {
-			$query->andWhere($query->expr()->eq('verb', $query->createNamedParameter($verb)));
-		}
-
-		$result = $query->execute();
-		$data = $result->fetch();
-		$result->closeCursor();
-
-		return (int) ($data['num_messages'] ?? 0);
-	}
-
-	public function getLastCommentBeforeDate(string $objectType, string $objectId, \DateTime $beforeDate, string $verb = ''): int {
-		$query = $this->dbConn->getQueryBuilder();
-		$query->select('id')
-			->from('comments')
-			->where($query->expr()->eq('object_type', $query->createNamedParameter($objectType)))
-			->andWhere($query->expr()->eq('object_id', $query->createNamedParameter($objectId)))
-			->andWhere($query->expr()->lt('creation_timestamp', $query->createNamedParameter($beforeDate, IQueryBuilder::PARAM_DATE)))
-			->orderBy('creation_timestamp', 'desc');
-
-		if ($verb !== '') {
-			$query->andWhere($query->expr()->eq('verb', $query->createNamedParameter($verb)));
-		}
-
-		$result = $query->execute();
-		$data = $result->fetch();
-		$result->closeCursor();
-
-		return (int) ($data['id'] ?? 0);
+		return $reactions;
 	}
 }

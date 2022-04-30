@@ -27,24 +27,24 @@ namespace OCA\Talk;
 
 use OCA\Talk\Chat\ChatManager;
 use OCP\Capabilities\IPublicCapability;
+use OCP\Comments\ICommentsManager;
 use OCP\IConfig;
 use OCP\IUser;
 use OCP\IUserSession;
 
 class Capabilities implements IPublicCapability {
-
-	/** @var IConfig */
-	protected $serverConfig;
-	/** @var Config */
-	protected $talkConfig;
-	/** @var IUserSession */
-	protected $userSession;
+	protected IConfig $serverConfig;
+	protected Config $talkConfig;
+	protected ICommentsManager $commentsManager;
+	protected IUserSession $userSession;
 
 	public function __construct(IConfig $serverConfig,
 								Config $talkConfig,
+								ICommentsManager $commentsManager,
 								IUserSession $userSession) {
 		$this->serverConfig = $serverConfig;
 		$this->talkConfig = $talkConfig;
+		$this->commentsManager = $commentsManager;
 		$this->userSession = $userSession;
 	}
 
@@ -59,7 +59,7 @@ class Capabilities implements IPublicCapability {
 				'audio',
 				'video',
 				'chat-v2',
-				'conversation-v2',
+				'conversation-v4',
 				'guest-signaling',
 				'empty-group-room',
 				'guest-display-names',
@@ -68,18 +68,40 @@ class Capabilities implements IPublicCapability {
 				'last-room-activity',
 				'no-ping',
 				'system-messages',
+				'delete-messages',
 				'mention-flag',
 				'in-call-flags',
+				'conversation-call-flags',
 				'notification-levels',
 				'invite-groups-and-mails',
 				'locked-one-to-one-rooms',
 				'read-only-rooms',
+				'listable-rooms',
 				'chat-read-marker',
+				'chat-unread',
 				'webinary-lobby',
 				'start-call-flag',
 				'chat-replies',
 				'circles-support',
 				'force-mute',
+				'sip-support',
+				'chat-read-status',
+				'phonebook-search',
+				'raise-hand',
+				'room-description',
+				'rich-object-sharing',
+				'temp-user-avatar-api',
+				'geo-location-sharing',
+				'voice-message-sharing',
+				'signaling-v3',
+				'publishing-permissions',
+				'clear-history',
+				'direct-mention-flag',
+				'notification-calls',
+				'conversation-permissions',
+				'rich-object-list-media',
+				'rich-object-delete',
+				'chat-permission',
 			],
 			'config' => [
 				'attachments' => [
@@ -87,17 +109,25 @@ class Capabilities implements IPublicCapability {
 				],
 				'chat' => [
 					'max-length' => ChatManager::MAX_CHAT_LENGTH,
+					'read-privacy' => Participant::PRIVACY_PUBLIC,
 				],
 				'conversations' => [],
+				'previews' => [
+					'max-gif-size' => (int)$this->serverConfig->getAppValue('spreed', 'max-gif-size', '3145728')
+				],
 			],
 		];
 
+		if ($this->commentsManager->supportReactions()) {
+			$capabilities['features'][] = 'reactions';
+		}
+
 		if ($user instanceof IUser) {
 			$capabilities['config']['attachments']['folder'] = $this->talkConfig->getAttachmentFolder($user->getUID());
+			$capabilities['config']['chat']['read-privacy'] = $this->talkConfig->getUserReadPrivacy($user->getUID());
 		}
 
 		$capabilities['config']['conversations']['can-create'] = $user instanceof IUser && !$this->talkConfig->isNotAllowedToCreateConversations($user);
-
 
 		if ($this->serverConfig->getAppValue('spreed', 'has_reference_id', 'no') === 'yes') {
 			$capabilities['features'][] = 'chat-reference-id';

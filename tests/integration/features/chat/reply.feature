@@ -7,7 +7,7 @@ Feature: chat/reply
     And user "participant2" is member of group "attendees1"
 
   Scenario: user can reply to own message
-    Given user "participant1" creates room "group room"
+    Given user "participant1" creates room "group room" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     And user "participant1" sends message "Message 1" to room "group room" with 201
@@ -22,7 +22,7 @@ Feature: chat/reply
       | group room | users     | participant1 | participant1-displayname | Message 1   | []                |               |
 
   Scenario: user can reply to other's messages
-    Given user "participant1" creates room "group room"
+    Given user "participant1" creates room "group room" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     And user "participant1" sends message "Message 1" to room "group room" with 201
@@ -37,7 +37,7 @@ Feature: chat/reply
       | group room | users     | participant1 | participant1-displayname | Message 1   | []                |               |
 
   Scenario: several users can reply to the same message several times
-    Given user "participant1" creates room "group room"
+    Given user "participant1" creates room "group room" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     And user "participant1" sends message "Message 1" to room "group room" with 201
@@ -63,7 +63,7 @@ Feature: chat/reply
 
 
   Scenario: user can reply to shared file messages
-    Given user "participant1" creates room "group room"
+    Given user "participant1" creates room "group room" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     And user "participant1" shares "welcome.txt" with room "group room"
@@ -91,7 +91,7 @@ Feature: chat/reply
       | group room | users     | participant1 | participant1-displayname | {file}      | "IGNORE"          |               |
 
   Scenario: user can not reply to commands
-    Given user "participant1" creates room "group room"
+    Given user "participant1" creates room "group room" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     And user "participant1" sends message "/help" to room "group room" with 201
@@ -104,7 +104,7 @@ Feature: chat/reply
     And user "participant2" sees the following messages in room "group room" with 200
 
   Scenario: user can not reply to system messages
-    Given user "participant1" creates room "group room"
+    Given user "participant1" creates room "group room" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     # The system messages need to be got so they are added to the list of known
@@ -112,6 +112,7 @@ Feature: chat/reply
     And user "participant1" sees the following system messages in room "group room" with 200
       | room       | actorType | actorId      | actorDisplayName         | systemMessage        |
       | group room | users     | participant1 | participant1-displayname | user_added           |
+      | group room | users     | participant1 | participant1-displayname | group_added           |
       | group room | users     | participant1 | participant1-displayname | conversation_created |
     When user "participant1" sends reply "Message X-1" on message "conversation_created" to room "group room" with 400
     Then user "participant1" sees the following messages in room "group room" with 200
@@ -120,7 +121,7 @@ Feature: chat/reply
 
 
   Scenario: user can reply to own replies
-    Given user "participant1" creates room "group room"
+    Given user "participant1" creates room "group room" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     And user "participant1" sends message "Message 1" to room "group room" with 201
@@ -138,7 +139,7 @@ Feature: chat/reply
       | group room | users     | participant1 | participant1-displayname | Message 1     | []                |               |
 
   Scenario: user can reply to other's replies
-    Given user "participant1" creates room "group room"
+    Given user "participant1" creates room "group room" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     And user "participant1" sends message "Message 1" to room "group room" with 201
@@ -159,7 +160,7 @@ Feature: chat/reply
       | group room | users     | participant1 | participant1-displayname | Message 1       | []                |               |
 
   Scenario: several users can reply to the same reply several times
-    Given user "participant1" creates room "group room"
+    Given user "participant1" creates room "group room" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     And user "participant1" sends message "Message 1" to room "group room" with 201
@@ -186,7 +187,7 @@ Feature: chat/reply
       | group room | users     | participant1 | participant1-displayname | Message 1     | []                |               |
 
   Scenario: getting parent and quote works
-    Given user "participant1" creates room "group room"
+    Given user "participant1" creates room "group room" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     And user "participant1" sends message "Message 1" to room "group room" with 201
@@ -205,7 +206,7 @@ Feature: chat/reply
 
 
   Scenario: user can not reply when not in the room
-    Given user "participant1" creates room "group room"
+    Given user "participant1" creates room "group room" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     And user "participant1" sends message "Message 1" to room "group room" with 201
@@ -218,10 +219,10 @@ Feature: chat/reply
 
 
   Scenario: user can not reply to a message from another room
-    Given user "participant1" creates room "group room1"
+    Given user "participant1" creates room "group room1" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
-    And user "participant1" creates room "group room2"
+    And user "participant1" creates room "group room2" (v4)
       | roomType | 2 |
       | invite   | attendees1 |
     And user "participant1" sends message "Message 1" to room "group room1" with 201

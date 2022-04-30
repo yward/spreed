@@ -35,9 +35,10 @@
 				<CallView v-if="isInCall"
 					:token="token"
 					:is-sidebar="true" />
-				<PreventUnload :when="isInCall" />
+				<PreventUnload :when="warnLeaving" />
 				<CallButton class="call-button" />
-				<ChatView :token="token" />
+				<ChatView />
+				<DeviceChecker :initialize-on-mounted="false" />
 			</template>
 		</aside>
 	</transition>
@@ -49,17 +50,19 @@ import { loadState } from '@nextcloud/initial-state'
 import CallView from './components/CallView/CallView'
 import ChatView from './components/ChatView'
 import CallButton from './components/TopBar/CallButton'
-import { PARTICIPANT } from './constants'
 import { EventBus } from './services/EventBus'
-import { fetchConversation } from './services/conversationsService'
 import { getPublicShareConversationData } from './services/filesIntegrationServices'
 import {
-	joinConversation,
 	leaveConversationSync,
 } from './services/participantsService'
 import { signalingKill } from './utils/webrtc/index'
 import browserCheck from './mixins/browserCheck'
+import sessionIssueHandler from './mixins/sessionIssueHandler'
+import isInCall from './mixins/isInCall'
+import participant from './mixins/participant'
 import talkHashCheck from './mixins/talkHashCheck'
+import '@nextcloud/dialogs/styles/toast.scss'
+import DeviceChecker from './components/DeviceChecker/DeviceChecker.vue'
 
 export default {
 
@@ -70,10 +73,14 @@ export default {
 		CallView,
 		ChatView,
 		PreventUnload,
+		DeviceChecker,
 	},
 
 	mixins: [
 		browserCheck,
+		sessionIssueHandler,
+		isInCall,
+		participant,
 		talkHashCheck,
 	],
 
@@ -109,15 +116,8 @@ export default {
 			return this.state.isOpen
 		},
 
-		isInCall() {
-			const participantIndex = this.$store.getters.getParticipantIndex(this.token, this.$store.getters.getParticipantIdentifier())
-			if (participantIndex === -1) {
-				return false
-			}
-
-			const participant = this.$store.getters.getParticipant(this.token, participantIndex)
-
-			return participant.inCall !== PARTICIPANT.CALL_FLAG.DISCONNECTED
+		warnLeaving() {
+			return !this.isLeavingAfterSessionIssue && this.isInCall
 		},
 	},
 
@@ -127,24 +127,24 @@ export default {
 				// We have to do this synchronously, because in unload and beforeunload
 				// Promises, async and await are prohibited.
 				signalingKill()
-				leaveConversationSync(this.token)
+				if (!this.isLeavingAfterSessionIssue) {
+					leaveConversationSync(this.token)
+				}
 			}
 		})
-	},
-
-	mounted() {
-		// see browserCheck mixin
-		this.checkBrowser()
 	},
 
 	methods: {
 
 		async joinConversation() {
+			// see browserCheck mixin
+			this.checkBrowser()
+
 			this.joiningConversation = true
 
 			await this.getPublicShareConversationData()
 
-			await joinConversation(this.token)
+			await this.$store.dispatch('joinConversation', { token: this.token })
 
 			// No need to wait for it, but fetching the conversation needs to be
 			// done once the user has joined the conversation (otherwise only
@@ -157,11 +157,11 @@ export default {
 			// used), although that should not be a problem given that only the
 			// "inCall" flag (which is locally updated when joining and leaving
 			// a call) is currently used.
-			if (loadState('talk', 'signaling_mode') !== 'internal') {
-				EventBus.$on('shouldRefreshConversations', this.fetchCurrentConversation)
-				EventBus.$on('Signaling::participantListChanged', this.fetchCurrentConversation)
+			if (loadState('spreed', 'signaling_mode') !== 'internal') {
+				EventBus.$on('should-refresh-conversations', this.fetchCurrentConversation)
+				EventBus.$on('signaling-participant-list-changed', this.fetchCurrentConversation)
 			} else {
-				// The "shouldRefreshConversations" event is triggered only when
+				// The "should-refresh-conversations" event is triggered only when
 				// the external signaling server is used; when the internal
 				// signaling server is used periodic polling has to be used
 				// instead.
@@ -202,21 +202,22 @@ export default {
 			}
 
 			try {
-				const response = await fetchConversation(this.token)
-				this.$store.dispatch('addConversation', response.data.ocs.data)
-				this.$store.dispatch('markConversationRead', this.token)
+				await this.$store.dispatch('fetchConversation', { token: this.token })
 
 				// Although the current participant is automatically added to
 				// the participants store it must be explicitly set in the
 				// actors store.
 				if (!this.$store.getters.getUserId()) {
+					// Set the current actor/participant for guests
+					const conversation = this.$store.getters.conversation(this.token)
+
 					// Setting a guest only uses "sessionId" and "participantType".
-					this.$store.dispatch('setCurrentParticipant', response.data.ocs.data)
+					this.$store.dispatch('setCurrentParticipant', conversation)
 				}
 			} catch (exception) {
 				window.clearInterval(this.fetchCurrentConversationIntervalId)
 
-				this.$store.dispatch('deleteConversationByToken', this.token)
+				this.$store.dispatch('deleteConversation', this.token)
 				this.$store.dispatch('updateToken', '')
 			}
 
@@ -339,6 +340,7 @@ export default {
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
+	position: relative;
 
 	flex-grow: 1;
 

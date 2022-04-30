@@ -35,9 +35,11 @@ export default {
 </script>
 
 <style lang="scss" scoped>
+@use 'sass:math';
+
 .participant-loading {
-	$icon-size: 32px;
-	height: 44px;
+	$icon-size: 44px;
+	height: 56px;
 	list-style-type: none;
 	padding-left: 4px;
 	margin: 5px 0;
@@ -58,8 +60,8 @@ export default {
 
 		.username {
 			background-color: var(--color-background-dark);
-			height: $icon-size / 2;
-			margin-top: $icon-size / 4;
+			height: math.div($icon-size, 2);
+			margin-top: math.div($icon-size, 4);
 			margin-left: 2px;
 		}
 	}

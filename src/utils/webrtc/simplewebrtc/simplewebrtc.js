@@ -3,35 +3,28 @@
 const WebRTC = require('./webrtc')
 const WildEmitter = require('wildemitter')
 const webrtcSupport = require('webrtcsupport')
-const attachMediaStream = require('attachmediastream')
 const mockconsole = require('mockconsole')
 
+/**
+ * @param {object} opts the options object.
+ */
 function SimpleWebRTC(opts) {
 	const self = this
 	const options = opts || {}
 	const config = this.config = {
-		socketio: {/* 'force new connection':true */},
 		connection: null,
 		debug: false,
-		localVideoEl: '',
-		remoteVideosEl: '',
 		enableDataChannels: true,
-		autoRequestMedia: false,
-		autoRemoveVideos: true,
-		adjustPeerVolume: false,
-		peerVolumeWhenSpeaking: 0.25,
-		media: {
-			video: true,
-			audio: true,
+		enableSimulcast: false,
+		maxBitrates: {
+			high: 900000,
+			medium: 300000,
+			low: 100000,
 		},
+		autoRequestMedia: false,
 		receiveMedia: {
 			offerToReceiveAudio: 1,
 			offerToReceiveVideo: 1,
-		},
-		localVideo: {
-			autoplay: true,
-			mirror: true,
-			muted: true,
 		},
 	}
 	let item, connection
@@ -55,7 +48,7 @@ function SimpleWebRTC(opts) {
 
 	// set our config from options
 	for (item in options) {
-		if (options.hasOwnProperty(item)) {
+		if (Object.prototype.hasOwnProperty.call(options, item)) {
 			this.config[item] = options[item]
 		}
 	}
@@ -82,12 +75,6 @@ function SimpleWebRTC(opts) {
 		connection = this.connection = this.config.connection
 	}
 
-	connection.on('connect', function() {
-		self.emit('connectionReady', connection.getSessionId())
-		self.sessionReady = true
-		self.testReadiness()
-	})
-
 	connection.on('message', function(message) {
 		const peers = self.webrtc.getPeers(message.from, message.roomType)
 		let peer
@@ -110,6 +97,7 @@ function SimpleWebRTC(opts) {
 					sharemyscreen: message.roomType === 'screen' && !message.broadcaster,
 					broadcaster: message.roomType === 'screen' && !message.broadcaster ? self.connection.getSessionId() : null,
 					sendVideoIfAvailable: self.connection.getSendVideoIfAvailable(),
+					receiverOnly: self.connection.hasFeature('mcu'),
 				})
 				self.emit('createdPeer', peer)
 			}
@@ -117,15 +105,25 @@ function SimpleWebRTC(opts) {
 		} else if (message.type === 'control') {
 			if (message.payload.action === 'forceMute') {
 				if (message.payload.peerId === self.connection.getSessionId()) {
-					self.mute()
-					self.emit('forcedMute')
+					if (self.webrtc.isAudioEnabled()) {
+						self.mute()
+						self.emit('forcedMute')
+					}
 				} else {
 					self.emit('mute', { id: message.payload.peerId })
 				}
 			}
+		} else if (message.type === 'nickChanged') {
+			// "nickChanged" can be received from a participant without a Peer
+			// object if that participant is not sending audio nor video.
+			self.emit('nick', { id: message.from, name: message.payload.name })
+		} else if (message.type === 'raiseHand') {
+			// "raisedHand" can be received from a participant without a Peer
+			// object if that participant is not sending audio nor video.
+			self.emit('raisedHand', { id: message.from, raised: message.payload })
 		} else if (peers.length) {
 			peers.forEach(function(peer) {
-				if (message.sid) {
+				if (message.sid && !self.connection.hasFeature('mcu')) {
 					if (peer.sid === message.sid) {
 						peer.handleMessage(message)
 					}
@@ -149,7 +147,7 @@ function SimpleWebRTC(opts) {
 	this.webrtc = new WebRTC(opts);
 
 	// attach a few methods from underlying lib to simple.
-	['mute', 'unmute', 'pauseVideo', 'resumeVideo', 'pause', 'resume', 'sendToAll', 'sendDirectlyToAll', 'getPeers', 'createPeer', 'removePeers'].forEach(function(method) {
+	['mute', 'unmute', 'pauseVideo', 'resumeVideo', 'enableVirtualBackground', 'disableVirtualBackground', 'isVirtualBackgroundEnabled', 'pause', 'resume', 'sendToAll', 'sendDirectlyToAll', 'getPeers', 'createPeer', 'removePeers'].forEach(function(method) {
 		self[method] = self.webrtc[method].bind(self.webrtc)
 	})
 
@@ -163,23 +161,9 @@ function SimpleWebRTC(opts) {
 		this.on('*', this.logger.log.bind(this.logger, 'SimpleWebRTC event:'))
 	}
 
-	// check for readiness
-	this.webrtc.on('localStream', function() {
-		self.testReadiness()
-	})
-
 	this.webrtc.on('message', function(payload) {
 		self.connection.emit('message', payload)
 	})
-
-	this.webrtc.on('peerStreamAdded', this.handlePeerStreamAdded.bind(this))
-	this.webrtc.on('peerStreamRemoved', this.handlePeerStreamRemoved.bind(this))
-
-	// echo cancellation attempts
-	if (this.config.adjustPeerVolume) {
-		this.webrtc.on('speaking', this.setVolumeForAll.bind(this, this.config.peerVolumeWhenSpeaking))
-		this.webrtc.on('stoppedSpeaking', this.setVolumeForAll.bind(this, 1))
-	}
 
 	connection.on('stunservers', function(args) {
 		// resets/overrides the config
@@ -215,17 +199,7 @@ function SimpleWebRTC(opts) {
 
 	// screensharing events
 	this.webrtc.on('localScreen', function(stream) {
-		const el = document.createElement('video')
-		const container = self.getRemoteVideoContainer()
-
-		el.oncontextmenu = function() { return false }
-		el.id = 'localScreen'
-		attachMediaStream(stream, el)
-		if (container) {
-			container.appendChild(el)
-		}
-
-		self.emit('localScreenAdded', el)
+		self.emit('localScreenAdded')
 		self.connection.emit('shareScreen')
 
 		// NOTE: we don't create screen peers for existing video peers here,
@@ -268,135 +242,27 @@ SimpleWebRTC.prototype.disconnect = function() {
 	this.emit('disconnected')
 }
 
-SimpleWebRTC.prototype.handlePeerStreamAdded = function(peer) {
-	const self = this
-	const container = this.getRemoteVideoContainer()
-	if (container) {
-		// If there is a video track Chromium does not play audio in a video element
-		// until the video track starts to play; an audio element is thus needed to
-		// play audio when the remote peer starts with the camera available but
-		// disabled.
-		const audio = attachMediaStream(peer.stream, null, { audio: true })
-		const video = attachMediaStream(peer.stream)
-
-		video.muted = true
-
-		// At least Firefox, Opera and Edge move the video to a wrong position
-		// instead of keeping it unchanged when "transform: scaleX(1)" is used
-		// ("transform: scaleX(-1)" is fine); as it should have no effect the
-		// transform is removed.
-		if (video.style.transform === 'scaleX(1)') {
-			video.style.transform = ''
-		}
-
-		// store video element as part of peer for easy removal
-		peer.audioEl = audio
-		peer.videoEl = video
-		audio.id = this.getDomId(peer) + '-audio'
-		video.id = this.getDomId(peer)
-
-		container.appendChild(audio)
-		container.appendChild(video)
-
-		this.emit('videoAdded', video, audio, peer)
-	}
-
-	// send our mute status to new peer if we're muted
-	// currently called with a small delay because it arrives before
-	// the video element is created otherwise (which happens after
-	// the async setRemoteDescription-createAnswer)
-	window.setTimeout(function() {
-		if (!self.webrtc.isAudioEnabled()) {
-			peer.send('mute', { name: 'audio' })
-		}
-		if (!self.webrtc.isVideoEnabled()) {
-			peer.send('mute', { name: 'video' })
-		}
-	}, 250)
-}
-
-SimpleWebRTC.prototype.handlePeerStreamRemoved = function(peer) {
-	const container = this.getRemoteVideoContainer()
-	const audioEl = peer.audioEl
-	const videoEl = peer.videoEl
-	if (this.config.autoRemoveVideos && container && audioEl) {
-		container.removeChild(audioEl)
-	}
-	if (this.config.autoRemoveVideos && container && videoEl) {
-		container.removeChild(videoEl)
-	}
-	if (videoEl) {
-		this.emit('videoRemoved', videoEl, peer)
-	}
-}
-
-SimpleWebRTC.prototype.getDomId = function(peer) {
-	return [peer.id, peer.type, peer.broadcaster ? 'broadcasting' : 'incoming'].join('_')
-}
-
-// set volume on video tag for all peers takse a value between 0 and 1
-SimpleWebRTC.prototype.setVolumeForAll = function(volume) {
-	this.webrtc.peers.forEach(function(peer) {
-		if (peer.audioEl) {
-			peer.audioEl.volume = volume
-		}
-	})
-}
-
-SimpleWebRTC.prototype.joinCall = function(name) {
+SimpleWebRTC.prototype.joinCall = function(name, mediaConstraints) {
 	if (this.config.autoRequestMedia) {
-		this.startLocalVideo()
+		this.startLocalVideo(mediaConstraints)
 	}
 	this.roomName = name
 	this.emit('joinedRoom', name)
 }
 
-SimpleWebRTC.prototype.getEl = function(idOrEl) {
-	if (typeof idOrEl === 'string') {
-		return document.getElementById(idOrEl)
-	} else {
-		return idOrEl
-	}
-}
-
-SimpleWebRTC.prototype.startLocalVideo = function() {
+SimpleWebRTC.prototype.startLocalVideo = function(mediaConstraints) {
 	const self = this
-	this.webrtc.start(this.config.media, function(err, stream) {
+	this.webrtc.start(mediaConstraints, function(err, stream, actualConstraints) {
 		if (err) {
 			self.emit('localMediaError', err)
 		} else {
-			self.emit('localMediaStarted', self.config.media)
-
-			const localVideoContainer = self.getLocalVideoContainer()
-			if (localVideoContainer) {
-				attachMediaStream(stream, localVideoContainer, self.config.localVideo)
-			}
+			self.emit('localMediaStarted', actualConstraints)
 		}
 	})
 }
 
 SimpleWebRTC.prototype.stopLocalVideo = function() {
 	this.webrtc.stop()
-}
-
-// this accepts either element ID or element
-// and either the video tag itself or a container
-// that will be used to put the video tag into.
-SimpleWebRTC.prototype.getLocalVideoContainer = function() {
-	const el = this.getEl(this.config.localVideoEl)
-	if (el && el.tagName === 'VIDEO') {
-		el.oncontextmenu = function() { return false }
-		return el
-	} else if (el) {
-		const video = document.createElement('video')
-		video.oncontextmenu = function() { return false }
-		el.appendChild(video)
-		return video
-	}
-}
-
-SimpleWebRTC.prototype.getRemoteVideoContainer = function() {
-	return this.getEl(this.config.remoteVideosEl)
 }
 
 SimpleWebRTC.prototype.shareScreen = function(mode, cb) {
@@ -409,18 +275,7 @@ SimpleWebRTC.prototype.getLocalScreen = function() {
 
 SimpleWebRTC.prototype.stopScreenShare = function() {
 	this.connection.emit('unshareScreen')
-	const videoEl = document.getElementById('localScreen')
-	const container = this.getRemoteVideoContainer()
 
-	if (this.config.autoRemoveVideos && container && videoEl) {
-		container.removeChild(videoEl)
-	}
-
-	// a hack to emit the event the removes the video
-	// element that we want
-	if (videoEl) {
-		this.emit('videoRemoved', videoEl)
-	}
 	if (this.getLocalScreen()) {
 		this.webrtc.stopScreenShare()
 	}
@@ -433,26 +288,6 @@ SimpleWebRTC.prototype.stopScreenShare = function() {
 			peer.end()
 		}
 	})
-}
-
-SimpleWebRTC.prototype.testReadiness = function() {
-	const self = this
-	if (this.sessionReady) {
-		if (!this.config.media.video && !this.config.media.audio) {
-			self.emit('readyToCall', self.connection.getSessionId())
-		} else if (this.webrtc.localStreams.length > 0) {
-			self.emit('readyToCall', self.connection.getSessionId())
-		}
-	}
-}
-
-SimpleWebRTC.prototype.createRoom = function(name, cb) {
-	this.roomName = name
-	if (arguments.length === 2) {
-		this.connection.emit('create', name, cb)
-	} else {
-		this.connection.emit('create', name)
-	}
 }
 
 module.exports = SimpleWebRTC

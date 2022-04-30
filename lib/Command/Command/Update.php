@@ -33,8 +33,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 class Update extends Base {
 	use TRenderCommand;
 
-	/** @var CommandService */
-	private $service;
+	private CommandService $service;
 
 	public function __construct(CommandService $service) {
 		parent::__construct();
@@ -77,7 +76,7 @@ class Update extends Base {
 		;
 	}
 
-	protected function execute(InputInterface $input, OutputInterface $output) {
+	protected function execute(InputInterface $input, OutputInterface $output): int {
 		$id = (int) $input->getArgument('command-id');
 		$cmd = $input->getArgument('cmd');
 		$name = $input->getArgument('name');
@@ -121,5 +120,6 @@ class Update extends Base {
 		$output->writeln('<info>Command updated</info>');
 		$output->writeln('');
 		$this->renderCommands(Base::OUTPUT_FORMAT_PLAIN, $output, [$command]);
+		return 0;
 	}
 }

@@ -23,8 +23,10 @@ declare(strict_types=1);
 
 namespace OCA\Talk\BackgroundJob;
 
+use OC\DB\ConnectionAdapter;
 use OC\DB\SchemaWrapper;
 use OCP\AppFramework\Utility\ITimeFactory;
+use OCP\BackgroundJob\IJob;
 use OCP\BackgroundJob\IJobList;
 use OCP\BackgroundJob\TimedJob;
 use OCP\IConfig;
@@ -36,12 +38,9 @@ use OCP\IDBConnection;
  * @package OCA\Talk\BackgroundJob
  */
 class CheckReferenceIdColumn extends TimedJob {
-
-	/** @var IJobList */
-	protected $jobList;
-	/** @var IConfig */
-	protected $serverConfig;
-	/** @var IDBConnection */
+	protected IJobList $jobList;
+	protected IConfig $serverConfig;
+	/** @var IDBConnection|ConnectionAdapter */
 	protected $connection;
 
 	public function __construct(ITimeFactory $timeFactory,
@@ -52,11 +51,14 @@ class CheckReferenceIdColumn extends TimedJob {
 		$this->jobList = $jobList;
 		$this->serverConfig = $serverConfig;
 		$this->connection = $connection;
+
+		// Every hour
 		$this->setInterval(3600);
+		$this->setTimeSensitivity(IJob::TIME_INSENSITIVE);
 	}
 
 	protected function run($argument): void {
-		$schema = new SchemaWrapper($this->connection);
+		$schema = new SchemaWrapper($this->connection->getInner());
 		if ($schema->hasTable('comments')) {
 			$table = $schema->getTable('comments');
 			if ($table->hasColumn('reference_id')) {

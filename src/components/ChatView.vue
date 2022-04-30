@@ -19,39 +19,40 @@
   -->
 
 <template>
-	<div
-		class="chatView"
+	<div class="chatView"
 		@dragover.prevent="handleDragOver"
 		@dragleave.prevent="isDraggingOver = false"
 		@drop.prevent="handleDropFiles">
 		<transition name="slide" mode="out-in">
-			<div
-				v-show="isDraggingOver"
+			<div v-show="isDraggingOver"
 				class="dragover">
 				<div class="drop-hint">
-					<div
-						class="drop-hint__icon"
+					<div class="drop-hint__icon"
 						:class="{
 							'icon-upload' : !isGuest && !isReadOnly,
 							'icon-user' : isGuest,
 							'icon-error' : isReadOnly}" />
-					<h2
-						class="drop-hint__text">
+					<h2 class="drop-hint__text">
 						{{ dropHintText }}
 					</h2>
 				</div>
 			</div>
 		</transition>
-		<MessagesList
-			:token="token" />
-		<NewMessageForm />
+		<MessagesList role="region"
+			:aria-label="t('spreed', 'Conversation messages')"
+			:is-chat-scrolled-to-bottom="isChatScrolledToBottom"
+			:token="token"
+			:is-visible="isVisible"
+			@set-chat-scrolled-to-bottom="setScrollStatus" />
+		<NewMessageForm role="region"
+			:is-chat-scrolled-to-bottom="isChatScrolledToBottom"
+			:aria-label="t('spreed', 'Post message')" />
 	</div>
 </template>
 
 <script>
 import MessagesList from './MessagesList/MessagesList'
 import NewMessageForm from './NewMessageForm/NewMessageForm'
-import { processFiles } from '../utils/fileUpload'
 import { CONVERSATION } from '../constants'
 
 export default {
@@ -64,15 +65,21 @@ export default {
 	},
 
 	props: {
-		token: {
-			type: String,
-			required: true,
+		isVisible: {
+			type: Boolean,
+			default: true,
 		},
 	},
 
-	data: function() {
+	data() {
 		return {
 			isDraggingOver: false,
+			/**
+			 * Initialised as true as when we open a new conversation we're scrolling to
+			 * the bottom for now. In the future when we'll open the conversation close
+			 * to the scroll position of the last read message, we will need to change this.
+			 */
+			isChatScrolledToBottom: true,
 		}
 	},
 
@@ -84,7 +91,7 @@ export default {
 			if (this.isGuest) {
 				return t('spreed', 'You need to be logged in to upload files')
 			} else if (this.isReadOnly) {
-				return t('spreed', 'This conversation is read only')
+				return t('spreed', 'This conversation is read-only')
 			} else {
 				return t('spreed', 'Drop your files to upload')
 			}
@@ -95,6 +102,10 @@ export default {
 			} else {
 				return undefined
 			}
+		},
+
+		token() {
+			return this.$store.getters.getToken()
 		},
 	},
 
@@ -122,7 +133,11 @@ export default {
 			// Create a unique id for the upload operation
 			const uploadId = new Date().getTime()
 			// Uploads and shares the files
-			processFiles(files, this.token, uploadId)
+			this.$store.dispatch('initialiseUpload', { files, token: this.token, uploadId })
+		},
+
+		setScrollStatus(payload) {
+			this.isChatScrolledToBottom = payload
 		},
 	},
 
@@ -131,10 +146,12 @@ export default {
 
 <style lang="scss" scoped>
 .chatView {
+	width: 100%;
 	height: 100%;
 	display: flex;
 	flex-direction: column;
 	flex-grow: 1;
+	min-height: 0;
 }
 
 .dragover {
@@ -146,7 +163,7 @@ export default {
 	background: var(--color-primary-light);
 	z-index: 11;
 	display: flex;
-	box-shadow: 0px 0px 36px var(--color-box-shadow);
+	box-shadow: 0 0 36px var(--color-box-shadow);
 	border-radius: var(--border-radius);
 	opacity: 90%;
 }

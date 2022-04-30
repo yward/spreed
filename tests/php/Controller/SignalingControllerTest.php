@@ -29,21 +29,30 @@ use OCA\Talk\Events\SignalingEvent;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Exceptions\RoomNotFoundException;
 use OCA\Talk\Manager;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Model\AttendeeMapper;
+use OCA\Talk\Model\SessionMapper;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
+use OCA\Talk\Service\SessionService;
 use OCA\Talk\Signaling\Messages;
 use OCA\Talk\TalkSession;
+use OCP\App\IAppManager;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Http\Client\IClientService;
 use OCP\IDBConnection;
 use OCP\IGroupManager;
 use OCP\IL10N;
+use OCP\IRequest;
 use OCP\IUser;
 use OCP\IUserManager;
 use OCP\Security\IHasher;
 use OCP\Security\ISecureRandom;
 use PHPUnit\Framework\MockObject\MockObject;
+use Psr\Log\LoggerInterface;
+use Test\TestCase;
 
 class CustomInputSignalingController extends SignalingController {
 	private $inputStream;
@@ -60,16 +69,18 @@ class CustomInputSignalingController extends SignalingController {
 /**
  * @group DB
  */
-class SignalingControllerTest extends \Test\TestCase {
-
-	/** @var Config */
-	private $config;
+class SignalingControllerTest extends TestCase {
+	private ?Config $config = null;
 	/** @var TalkSession|MockObject */
 	private $session;
 	/** @var \OCA\Talk\Signaling\Manager|MockObject */
 	private $signalingManager;
 	/** @var Manager|MockObject */
 	protected $manager;
+	/** @var ParticipantService|MockObject */
+	protected $participantService;
+	/** @var SessionService|MockObject */
+	protected $sessionService;
 	/** @var IDBConnection|MockObject */
 	protected $dbConnection;
 	/** @var Messages|MockObject */
@@ -80,15 +91,13 @@ class SignalingControllerTest extends \Test\TestCase {
 	protected $timeFactory;
 	/** @var IClientService|MockObject */
 	protected $clientService;
-	/** @var string */
-	private $userId;
-	/** @var ISecureRandom */
-	private $secureRandom;
-	/** @var IEventDispatcher */
-	private $dispatcher;
+	private ?string $userId = null;
+	private ?ISecureRandom $secureRandom = null;
+	private ?IEventDispatcher $dispatcher = null;
+	/** @var LoggerInterface|MockObject */
+	private $logger;
 
-	/** @var CustomInputSignalingController */
-	private $controller;
+	private ?CustomInputSignalingController $controller = null;
 
 	public function setUp(): void {
 		parent::setUp();
@@ -103,33 +112,39 @@ class SignalingControllerTest extends \Test\TestCase {
 		]));
 		$config->setAppValue('spreed', 'signaling_ticket_secret', 'the-app-ticket-secret');
 		$config->setUserValue($this->userId, 'spreed', 'signaling_ticket_secret', 'the-user-ticket-secret');
-		$this->config = new Config($config, $this->secureRandom, $groupManager, $timeFactory);
+		$this->dispatcher = \OC::$server->get(IEventDispatcher::class);
+		$this->config = new Config($config, $this->secureRandom, $groupManager, $timeFactory, $this->dispatcher);
 		$this->session = $this->createMock(TalkSession::class);
 		$this->dbConnection = \OC::$server->getDatabaseConnection();
 		$this->signalingManager = $this->createMock(\OCA\Talk\Signaling\Manager::class);
 		$this->manager = $this->createMock(Manager::class);
+		$this->participantService = $this->createMock(ParticipantService::class);
+		$this->sessionService = $this->createMock(SessionService::class);
 		$this->messages = $this->createMock(Messages::class);
 		$this->userManager = $this->createMock(IUserManager::class);
 		$this->timeFactory = $this->createMock(ITimeFactory::class);
 		$this->clientService = $this->createMock(IClientService::class);
-		$this->dispatcher = \OC::$server->query(IEventDispatcher::class);
+		$this->logger = $this->createMock(LoggerInterface::class);
 		$this->recreateSignalingController();
 	}
 
 	private function recreateSignalingController() {
 		$this->controller = new CustomInputSignalingController(
 			'spreed',
-			$this->createMock(\OCP\IRequest::class),
+			$this->createMock(IRequest::class),
 			$this->config,
 			$this->signalingManager,
 			$this->session,
 			$this->manager,
+			$this->participantService,
+			$this->sessionService,
 			$this->dbConnection,
 			$this->messages,
 			$this->userManager,
 			$this->dispatcher,
 			$this->timeFactory,
 			$this->clientService,
+			$this->logger,
 			$this->userId
 		);
 	}
@@ -371,7 +386,17 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($roomToken)
 			->willReturn($room);
 
+		$attendee = Attendee::fromRow([
+			'permissions' => Attendee::PERMISSIONS_DEFAULT,
+			'actor_type' => Attendee::ACTOR_USERS,
+		]);
 		$participant = $this->createMock(Participant::class);
+		$participant->expects($this->any())
+			->method('getAttendee')
+			->willReturn($attendee);
+		$participant->expects($this->any())
+			->method('getPermissions')
+			->willReturn(Attendee::PERMISSIONS_MAX_CUSTOM);
 		$room->expects($this->once())
 			->method('getParticipant')
 			->with($this->userId)
@@ -384,7 +409,7 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($this->userId)
 			->willReturn([
 				'name' => $roomName,
-				'type' => Room::ONE_TO_ONE_CALL,
+				'type' => Room::TYPE_ONE_TO_ONE,
 			]);
 
 		$result = $this->performBackendRequest([
@@ -402,10 +427,11 @@ class SignalingControllerTest extends \Test\TestCase {
 				'roomid' => $roomToken,
 				'properties' => [
 					'name' => $roomName,
-					'type' => Room::ONE_TO_ONE_CALL,
+					'type' => Room::TYPE_ONE_TO_ONE,
 				],
 				'permissions' => [
-					'publish-media',
+					'publish-audio',
+					'publish-video',
 					'publish-screen',
 				],
 			],
@@ -421,7 +447,17 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($roomToken)
 			->willReturn($room);
 
+		$attendee = Attendee::fromRow([
+			'permissions' => Attendee::PERMISSIONS_DEFAULT,
+			'actor_type' => Attendee::ACTOR_USERS,
+		]);
 		$participant = $this->createMock(Participant::class);
+		$participant->expects($this->any())
+			->method('getAttendee')
+			->willReturn($attendee);
+		$participant->expects($this->any())
+			->method('getPermissions')
+			->willReturn(Attendee::PERMISSIONS_MAX_CUSTOM);
 		$room->expects($this->once())
 			->method('getParticipant')
 			->with($this->userId)
@@ -434,7 +470,7 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($this->userId)
 			->willReturn([
 				'name' => $roomName,
-				'type' => Room::PUBLIC_CALL,
+				'type' => Room::TYPE_PUBLIC,
 			]);
 
 		$result = $this->performBackendRequest([
@@ -452,10 +488,11 @@ class SignalingControllerTest extends \Test\TestCase {
 				'roomid' => $roomToken,
 				'properties' => [
 					'name' => $roomName,
-					'type' => Room::PUBLIC_CALL,
+					'type' => Room::TYPE_PUBLIC,
 				],
 				'permissions' => [
-					'publish-media',
+					'publish-audio',
+					'publish-video',
 					'publish-screen',
 				],
 			],
@@ -471,7 +508,17 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($roomToken)
 			->willReturn($room);
 
+		$attendee = Attendee::fromRow([
+			'permissions' => Attendee::PERMISSIONS_DEFAULT,
+			'actor_type' => Attendee::ACTOR_USERS,
+		]);
 		$participant = $this->createMock(Participant::class);
+		$participant->expects($this->any())
+			->method('getAttendee')
+			->willReturn($attendee);
+		$participant->expects($this->any())
+			->method('getPermissions')
+			->willReturn(Attendee::PERMISSIONS_MAX_CUSTOM);
 		$participant->expects($this->once())
 			->method('hasModeratorPermissions')
 			->with(false)
@@ -488,7 +535,7 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($this->userId)
 			->willReturn([
 				'name' => $roomName,
-				'type' => Room::PUBLIC_CALL,
+				'type' => Room::TYPE_PUBLIC,
 			]);
 
 		$result = $this->performBackendRequest([
@@ -506,10 +553,11 @@ class SignalingControllerTest extends \Test\TestCase {
 				'roomid' => $roomToken,
 				'properties' => [
 					'name' => $roomName,
-					'type' => Room::PUBLIC_CALL,
+					'type' => Room::TYPE_PUBLIC,
 				],
 				'permissions' => [
-					'publish-media',
+					'publish-audio',
+					'publish-video',
 					'publish-screen',
 					'control',
 				],
@@ -527,7 +575,17 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($roomToken)
 			->willReturn($room);
 
+		$attendee = Attendee::fromRow([
+			'permissions' => Attendee::PERMISSIONS_DEFAULT,
+			'actor_type' => Attendee::ACTOR_USERS,
+		]);
 		$participant = $this->createMock(Participant::class);
+		$participant->expects($this->any())
+			->method('getAttendee')
+			->willReturn($attendee);
+		$participant->expects($this->any())
+			->method('getPermissions')
+			->willReturn(Attendee::PERMISSIONS_MAX_CUSTOM);
 		$room->expects($this->once())
 			->method('getParticipantBySession')
 			->with($sessionId)
@@ -540,7 +598,7 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with('')
 			->willReturn([
 				'name' => $roomName,
-				'type' => Room::PUBLIC_CALL,
+				'type' => Room::TYPE_PUBLIC,
 			]);
 
 		$result = $this->performBackendRequest([
@@ -558,10 +616,11 @@ class SignalingControllerTest extends \Test\TestCase {
 				'roomid' => $roomToken,
 				'properties' => [
 					'name' => $roomName,
-					'type' => Room::PUBLIC_CALL,
+					'type' => Room::TYPE_PUBLIC,
 				],
 				'permissions' => [
-					'publish-media',
+					'publish-audio',
+					'publish-video',
 					'publish-screen',
 				],
 			],
@@ -578,11 +637,17 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($roomToken)
 			->willReturn($room);
 
+		$attendee = Attendee::fromRow([
+			'permissions' => Attendee::PERMISSIONS_DEFAULT,
+			'actor_type' => Attendee::ACTOR_USERS,
+		]);
 		$participant = $this->createMock(Participant::class);
-		$room->expects($this->once())
-			->method('getParticipant')
-			->with($this->userId)
-			->willThrowException(new ParticipantNotFoundException());
+		$participant->expects($this->any())
+			->method('getAttendee')
+			->willReturn($attendee);
+		$participant->expects($this->any())
+			->method('getPermissions')
+			->willReturn(Attendee::PERMISSIONS_MAX_CUSTOM);
 		$room->expects($this->once())
 			->method('getParticipantBySession')
 			->with($sessionId)
@@ -595,7 +660,7 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($this->userId)
 			->willReturn([
 				'name' => $roomName,
-				'type' => Room::PUBLIC_CALL,
+				'type' => Room::TYPE_PUBLIC,
 			]);
 
 		$result = $this->performBackendRequest([
@@ -613,12 +678,89 @@ class SignalingControllerTest extends \Test\TestCase {
 				'roomid' => $roomToken,
 				'properties' => [
 					'name' => $roomName,
-					'type' => Room::PUBLIC_CALL,
+					'type' => Room::TYPE_PUBLIC,
 				],
 				'permissions' => [
-					'publish-media',
+					'publish-audio',
+					'publish-video',
 					'publish-screen',
 				],
+			],
+		], $result->getData());
+	}
+
+	public function dataBackendRoomUserPublicPermissions(): array {
+		return [
+			[Attendee::PERMISSIONS_DEFAULT, []],
+			[Attendee::PERMISSIONS_PUBLISH_AUDIO, ['publish-audio']],
+			[Attendee::PERMISSIONS_PUBLISH_VIDEO, ['publish-video']],
+			[Attendee::PERMISSIONS_PUBLISH_AUDIO | Attendee::PERMISSIONS_PUBLISH_VIDEO, ['publish-audio', 'publish-video']],
+			[Attendee::PERMISSIONS_PUBLISH_SCREEN, ['publish-screen']],
+			[Attendee::PERMISSIONS_PUBLISH_AUDIO | Attendee::PERMISSIONS_PUBLISH_SCREEN, ['publish-audio', 'publish-screen']],
+			[Attendee::PERMISSIONS_PUBLISH_VIDEO | Attendee::PERMISSIONS_PUBLISH_SCREEN, ['publish-video', 'publish-screen']],
+			[Attendee::PERMISSIONS_PUBLISH_AUDIO | Attendee::PERMISSIONS_PUBLISH_VIDEO | Attendee::PERMISSIONS_PUBLISH_SCREEN, ['publish-audio', 'publish-video', 'publish-screen']],
+		];
+	}
+
+	/**
+	 * @dataProvider dataBackendRoomUserPublicPermissions
+	 *
+	 * @param int $permissions
+	 * @param array $expectedBackendPermissions
+	 */
+	public function testBackendRoomUserPublicPermissions(int $permissions, array $expectedBackendPermissions) {
+		$roomToken = 'the-room';
+		$roomName = 'the-room-name';
+		$room = $this->createMock(Room::class);
+		$this->manager->expects($this->once())
+			->method('getRoomByToken')
+			->with($roomToken)
+			->willReturn($room);
+
+		$attendee = Attendee::fromRow([
+			'permissions' => $permissions,
+			'actor_type' => Attendee::ACTOR_USERS,
+		]);
+		$participant = $this->createMock(Participant::class);
+		$participant->expects($this->any())
+			->method('getAttendee')
+			->willReturn($attendee);
+		$participant->expects($this->any())
+			->method('getPermissions')
+			->willReturn($permissions);
+		$room->expects($this->once())
+			->method('getParticipant')
+			->with($this->userId)
+			->willReturn($participant);
+		$room->expects($this->once())
+			->method('getToken')
+			->willReturn($roomToken);
+		$room->expects($this->once())
+			->method('getPropertiesForSignaling')
+			->with($this->userId)
+			->willReturn([
+				'name' => $roomName,
+				'type' => Room::TYPE_PUBLIC,
+			]);
+
+		$result = $this->performBackendRequest([
+			'type' => 'room',
+			'room' => [
+				'roomid' => $roomToken,
+				'userid' => $this->userId,
+				'sessionid' => '',
+			],
+		]);
+		$this->assertSame([
+			'type' => 'room',
+			'room' => [
+				'version' => '1.0',
+				'roomid' => $roomToken,
+				'properties' => [
+					'name' => $roomName,
+					'type' => Room::TYPE_PUBLIC,
+				],
+				'permissions' => $expectedBackendPermissions,
 			],
 		], $result->getData());
 	}
@@ -632,7 +774,6 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($roomToken)
 			->willReturn($room);
 
-		$participant = $this->createMock(Participant::class);
 		$room->expects($this->once())
 			->method('getParticipantBySession')
 			->willThrowException(new ParticipantNotFoundException());
@@ -671,7 +812,17 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($roomToken)
 			->willReturn($room);
 
+		$attendee = Attendee::fromRow([
+			'permissions' => Attendee::PERMISSIONS_DEFAULT,
+			'actor_type' => Attendee::ACTOR_USERS,
+		]);
 		$participant = $this->createMock(Participant::class);
+		$participant->expects($this->any())
+			->method('getAttendee')
+			->willReturn($attendee);
+		$participant->expects($this->any())
+			->method('getPermissions')
+			->willReturn(Attendee::PERMISSIONS_MAX_CUSTOM);
 		$room->expects($this->once())
 			->method('getParticipant')
 			->with($this->userId)
@@ -684,7 +835,7 @@ class SignalingControllerTest extends \Test\TestCase {
 			->with($this->userId)
 			->willReturn([
 				'name' => $roomName,
-				'type' => Room::ONE_TO_ONE_CALL,
+				'type' => Room::TYPE_ONE_TO_ONE,
 			]);
 
 		$result = $this->performBackendRequest([
@@ -702,10 +853,11 @@ class SignalingControllerTest extends \Test\TestCase {
 				'roomid' => $roomToken,
 				'properties' => [
 					'name' => $roomName,
-					'type' => Room::ONE_TO_ONE_CALL,
+					'type' => Room::TYPE_ONE_TO_ONE,
 				],
 				'permissions' => [
-					'publish-media',
+					'publish-audio',
+					'publish-video',
 					'publish-screen',
 				],
 				'session' => [
@@ -755,9 +907,12 @@ class SignalingControllerTest extends \Test\TestCase {
 		$room->expects($this->once())
 			->method('getToken')
 			->willReturn($roomToken);
-		$room->expects($this->once())
-			->method('pingSessionIds')
-			->with([$sessionId]);
+
+		$this->timeFactory->method('getTime')
+			->willReturn(123456);
+		$this->sessionService->expects($this->once())
+			->method('updateMultipleLastPings')
+			->with([$sessionId], 123456);
 
 		$result = $this->performBackendRequest([
 			'type' => 'ping',
@@ -791,9 +946,12 @@ class SignalingControllerTest extends \Test\TestCase {
 		$room->expects($this->once())
 			->method('getToken')
 			->willReturn($roomToken);
-		$room->expects($this->once())
-			->method('pingSessionIds')
-			->with([$sessionId]);
+
+		$this->timeFactory->method('getTime')
+			->willReturn(1234567);
+		$this->sessionService->expects($this->once())
+			->method('updateMultipleLastPings')
+			->with([$sessionId], 1234567);
 
 		$result = $this->performBackendRequest([
 			'type' => 'ping',
@@ -827,9 +985,12 @@ class SignalingControllerTest extends \Test\TestCase {
 		$room->expects($this->once())
 			->method('getToken')
 			->willReturn($roomToken);
-		$room->expects($this->once())
-			->method('pingSessionIds')
-			->with([$sessionId . '1', $sessionId . '2']);
+
+		$this->timeFactory->method('getTime')
+			->willReturn(234567);
+		$this->sessionService->expects($this->once())
+			->method('updateMultipleLastPings')
+			->with([$sessionId . '1', $sessionId . '2'], 234567);
 
 		$result = $this->performBackendRequest([
 			'type' => 'ping',
@@ -865,12 +1026,21 @@ class SignalingControllerTest extends \Test\TestCase {
 		// Make sure that leaving a user with an old session id doesn't remove
 		// the current user from the room if he re-joined in the meantime.
 		$dbConnection = \OC::$server->getDatabaseConnection();
-		$dispatcher = \OC::$server->query(IEventDispatcher::class);
+		$dispatcher = \OC::$server->get(IEventDispatcher::class);
+		/** @var ParticipantService $participantService */
+		$participantService = \OC::$server->get(ParticipantService::class);
+
 		$this->manager = new Manager(
 			$dbConnection,
 			\OC::$server->getConfig(),
+			$this->createMock(Config::class),
+			\OC::$server->get(IAppManager::class),
+			\OC::$server->get(AttendeeMapper::class),
+			\OC::$server->get(SessionMapper::class),
+			$participantService,
 			$this->secureRandom,
 			$this->createMock(IUserManager::class),
+			$this->createMock(IGroupManager::class),
 			$this->createMock(CommentsManager::class),
 			$this->createMock(TalkSession::class),
 			$dispatcher,
@@ -888,11 +1058,12 @@ class SignalingControllerTest extends \Test\TestCase {
 			->method('getUID')
 			->willReturn($this->userId);
 
-		$room = $this->manager->createPublicRoom();
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
 
 		// The user joined the room.
-		$oldSessionId = $room->joinRoom($testUser, '');
-		$result = $this->performBackendRequest([
+		$oldParticipant = $participantService->joinRoom($room, $testUser, '');
+		$oldSessionId = $oldParticipant->getSession()->getSessionId();
+		$this->performBackendRequest([
 			'type' => 'room',
 			'room' => [
 				'roomid' => $room->getToken(),
@@ -901,13 +1072,14 @@ class SignalingControllerTest extends \Test\TestCase {
 				'action' => 'join',
 			],
 		]);
-		$participant = $room->getParticipant($this->userId);
-		$this->assertEquals($oldSessionId, $participant->getSessionId());
+		$participant = $room->getParticipant($this->userId, $oldSessionId);
+		$this->assertEquals($oldSessionId, $participant->getSession()->getSessionId());
 
 		// The user is reloading the browser which will join him with another
 		// session id.
-		$newSessionId = $room->joinRoom($testUser, '');
-		$result = $this->performBackendRequest([
+		$newParticipant = $participantService->joinRoom($room, $testUser, '');
+		$newSessionId = $newParticipant->getSession()->getSessionId();
+		$this->performBackendRequest([
 			'type' => 'room',
 			'room' => [
 				'roomid' => $room->getToken(),
@@ -918,11 +1090,11 @@ class SignalingControllerTest extends \Test\TestCase {
 		]);
 
 		// Now the new session id is stored in the database.
-		$participant = $room->getParticipant($this->userId);
-		$this->assertEquals($newSessionId, $participant->getSessionId());
+		$participant = $room->getParticipant($this->userId, $newSessionId);
+		$this->assertEquals($newSessionId, $participant->getSession()->getSessionId());
 
 		// Leaving the old session id...
-		$result = $this->performBackendRequest([
+		$this->performBackendRequest([
 			'type' => 'room',
 			'room' => [
 				'roomid' => $room->getToken(),
@@ -933,7 +1105,7 @@ class SignalingControllerTest extends \Test\TestCase {
 		]);
 
 		// ...will keep the new session id in the database.
-		$participant = $room->getParticipant($this->userId);
-		$this->assertEquals($newSessionId, $participant->getSessionId());
+		$participant = $room->getParticipant($this->userId, $newSessionId);
+		$this->assertEquals($newSessionId, $participant->getSession()->getSessionId());
 	}
 }

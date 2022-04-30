@@ -3,7 +3,7 @@
  *
  * @author Joas Schilling <coding@schilljs.com>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -29,8 +29,9 @@ const state = {
 const getters = {
 	/**
 	 * Gets the participants array
+	 *
 	 * @param {object} state the state object.
-	 * @returns {array} the participants array (if there are participants in the store)
+	 * @return {Array} the participants array (if there are participants in the store)
 	 */
 	getGuestName: (state) => (token, actorId) => {
 		if (state.guestNames[token] && state.guestNames[token][actorId]) {
@@ -38,16 +39,26 @@ const getters = {
 		}
 		return t('spreed', 'Guest')
 	},
+
+	getGuestNameWithGuestSuffix: (state, getters) => (token, actorId) => {
+		const displayName = getters.getGuestName(token, actorId)
+		if (displayName === t('spreed', 'Guest')) {
+			return displayName
+		}
+		return t('spreed', '{guest} (guest)', { guest: displayName })
+	},
 }
 
 const mutations = {
 	/**
 	 * Adds a guest name to the store
+	 *
 	 * @param {object} state current store state
-	 * @param {boolean} noUpdate Only set the guest name if it was not set before
-	 * @param {string} token the token of the conversation
-	 * @param {string} actorId the guest
-	 * @param {string} actorDisplayName the display name to set
+	 * @param {object} data the wrapping object;
+	 * @param {boolean} data.noUpdate Only set the guest name if it was not set before
+	 * @param {string} data.token the token of the conversation
+	 * @param {string} data.actorId the guest
+	 * @param {string} data.actorDisplayName the display name to set
 	 */
 	addGuestName(state, { noUpdate, token, actorId, actorDisplayName }) {
 		if (!state.guestNames[token]) {
@@ -68,20 +79,23 @@ const actions = {
 	 * Add guest name of a chat message to the store
 	 *
 	 * @param {object} context default store context
-	 * @param {string} token the token of the conversation
-	 * @param {string} actorId the guest
-	 * @param {string} actorDisplayName the display name to set
+	 * @param {object} data the wrapping object;
+	 * @param {string} data.token the token of the conversation
+	 * @param {string} data.actorId the guest
+	 * @param {string} data.actorDisplayName the display name to set
 	 */
 	setGuestNameIfEmpty(context, { token, actorId, actorDisplayName }) {
 		context.commit('addGuestName', { noUpdate: true, token, actorId, actorDisplayName })
 	},
+
 	/**
 	 * Add guest name of a chat message to the store
 	 *
 	 * @param {object} context default store context
-	 * @param {string} token the token of the conversation
-	 * @param {string} actorId the guest
-	 * @param {string} actorDisplayName the display name to set
+	 * @param {object} data the wrapping object;
+	 * @param {string} data.token the token of the conversation
+	 * @param {string} data.actorId the guest
+	 * @param {string} data.actorDisplayName the display name to set
 	 */
 	forceGuestName(context, { token, actorId, actorDisplayName }) {
 		context.commit('addGuestName', { noUpdate: false, token, actorId, actorDisplayName })

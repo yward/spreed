@@ -29,12 +29,9 @@ use OCA\Talk\Model\CommandMapper;
 use OCP\AppFramework\Db\DoesNotExistException;
 
 class CommandService {
+	protected CommandMapper $mapper;
 
-	/** @var CommandMapper */
-	protected $mapper;
-
-	/** @var ShellExecutor */
-	protected $shellExecutor;
+	protected ShellExecutor $shellExecutor;
 
 	public function __construct(CommandMapper $mapper, ShellExecutor $shellExecutor) {
 		$this->mapper = $mapper;
@@ -97,9 +94,6 @@ class CommandService {
 	 */
 	public function update(int $id, string $cmd, string $name, string $script, int $response, int $enabled): Command {
 		$command = $this->mapper->findById($id);
-		if ($command->getApp() !== '' || $command->getCommand() === 'help') {
-			throw new \InvalidArgumentException('app', 0);
-		}
 
 		$command->setName($name);
 		$command->setScript($script);
@@ -141,7 +135,7 @@ class CommandService {
 				} catch (DoesNotExistException $e) {
 					throw new \InvalidArgumentException('script', 3);
 				}
-			} else {
+			} elseif ($script !== 'help') {
 				if (preg_match('/[`\'"]{(?:ARGUMENTS|ROOM|USER)}[`\'"]/i', $script)) {
 					throw new \InvalidArgumentException('script-parameters', 6);
 				}

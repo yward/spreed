@@ -26,34 +26,39 @@ declare(strict_types=1);
 namespace OCA\Talk\Signaling;
 
 use OCA\Talk\Config;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Model\Session;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
 use OCP\Http\Client\IClientService;
-use OCP\ILogger;
+use OCP\IURLGenerator;
 use OCP\Security\ISecureRandom;
+use Psr\Log\LoggerInterface;
 
 class BackendNotifier {
-	/** @var Config */
-	private $config;
-	/** @var ILogger */
-	private $logger;
-	/** @var IClientService */
-	private $clientService;
-	/** @var ISecureRandom */
-	private $secureRandom;
-	/** @var Manager */
-	private $signalingManager;
+	private Config $config;
+	private LoggerInterface $logger;
+	private IClientService $clientService;
+	private ISecureRandom $secureRandom;
+	private Manager $signalingManager;
+	private ParticipantService $participantService;
+	private IURLGenerator $urlGenerator;
 
 	public function __construct(Config $config,
-								ILogger $logger,
+								LoggerInterface $logger,
 								IClientService $clientService,
 								ISecureRandom $secureRandom,
-								Manager $signalingManager) {
+								Manager $signalingManager,
+								ParticipantService $participantService,
+								IURLGenerator $urlGenerator) {
 		$this->config = $config;
 		$this->logger = $logger;
 		$this->clientService = $clientService;
 		$this->secureRandom = $secureRandom;
 		$this->signalingManager = $signalingManager;
+		$this->participantService = $participantService;
+		$this->urlGenerator = $urlGenerator;
 	}
 
 	/**
@@ -72,12 +77,13 @@ class BackendNotifier {
 
 		$client = $this->clientService->newClient();
 		try {
-			$client->post($url, $params);
+			$response = $client->post($url, $params);
+
+			if (!$this->signalingManager->isCompatibleSignalingServer($response)) {
+				throw new \RuntimeException('Signaling server needs to be updated to be compatible with this version of Talk');
+			}
 		} catch (\Exception $e) {
-			$this->logger->logException($e, [
-				'app' => 'spreed',
-				'message' => 'Failed to send message to signaling server',
-			]);
+			$this->logger->error('Failed to send message to signaling server', ['exception' => $e]);
 		}
 	}
 
@@ -113,10 +119,14 @@ class BackendNotifier {
 		$hash = hash_hmac('sha256', $random . $body, $this->config->getSignalingSecret());
 		$headers['Spreed-Signaling-Random'] = $random;
 		$headers['Spreed-Signaling-Checksum'] = $hash;
+		$headers['Spreed-Signaling-Backend'] = $this->urlGenerator->getBaseUrl();
 
 		$params = [
 			'headers' => $headers,
 			'body' => $body,
+			'nextcloud' => [
+				'allow_local_address' => true,
+			],
 		];
 		if (empty($signaling['verify'])) {
 			$params['verify'] = false;
@@ -132,20 +142,29 @@ class BackendNotifier {
 	 * @throws \Exception
 	 */
 	public function roomInvited(Room $room, array $users): void {
-		$this->logger->info('Now invited to ' . $room->getToken() . ': ' . print_r($users, true), ['app' => 'spreed']);
 		$userIds = [];
 		foreach ($users as $user) {
-			$userIds[] = $user['userId'];
+			if ($user['actorType'] === Attendee::ACTOR_USERS) {
+				$userIds[] = $user['actorId'];
+			}
 		}
+		$start = microtime(true);
 		$this->backendRequest($room, [
 			'type' => 'invite',
 			'invite' => [
 				'userids' => $userIds,
 				// TODO(fancycode): We should try to get rid of 'alluserids' and
 				// find a better way to notify existing users to update the room.
-				'alluserids' => $room->getParticipantUserIds(),
-				'properties' => $room->getPropertiesForSignaling(''),
+				'alluserids' => $this->participantService->getParticipantUserIds($room),
+				'properties' => $room->getPropertiesForSignaling('', false),
 			],
+		]);
+		$duration = microtime(true) - $start;
+		$this->logger->debug('Now invited to {token}: {users} ({duration})', [
+			'token' => $room->getToken(),
+			'users' => print_r($users, true),
+			'duration' => sprintf('%.2f', $duration),
+			'app' => 'spreed-hpb',
 		]);
 	}
 
@@ -157,16 +176,23 @@ class BackendNotifier {
 	 * @throws \Exception
 	 */
 	public function roomsDisinvited(Room $room, array $userIds): void {
-		$this->logger->info('No longer invited to ' . $room->getToken() . ': ' . print_r($userIds, true), ['app' => 'spreed']);
+		$start = microtime(true);
 		$this->backendRequest($room, [
 			'type' => 'disinvite',
 			'disinvite' => [
 				'userids' => $userIds,
 				// TODO(fancycode): We should try to get rid of 'alluserids' and
 				// find a better way to notify existing users to update the room.
-				'alluserids' => $room->getParticipantUserIds(),
-				'properties' => $room->getPropertiesForSignaling(''),
+				'alluserids' => $this->participantService->getParticipantUserIds($room),
+				'properties' => $room->getPropertiesForSignaling('', false),
 			],
+		]);
+		$duration = microtime(true) - $start;
+		$this->logger->debug('No longer invited to {token}: {users} ({duration})', [
+			'token' => $room->getToken(),
+			'users' => print_r($userIds, true),
+			'duration' => sprintf('%.2f', $duration),
+			'app' => 'spreed-hpb',
 		]);
 	}
 
@@ -178,16 +204,23 @@ class BackendNotifier {
 	 * @throws \Exception
 	 */
 	public function roomSessionsRemoved(Room $room, array $sessionIds): void {
-		$this->logger->info('Removed from ' . $room->getToken() . ': ' . print_r($sessionIds, true), ['app' => 'spreed']);
+		$start = microtime(true);
 		$this->backendRequest($room, [
 			'type' => 'disinvite',
 			'disinvite' => [
 				'sessionids' => $sessionIds,
 				// TODO(fancycode): We should try to get rid of 'alluserids' and
 				// find a better way to notify existing users to update the room.
-				'alluserids' => $room->getParticipantUserIds(),
-				'properties' => $room->getPropertiesForSignaling(''),
+				'alluserids' => $this->participantService->getParticipantUserIds($room),
+				'properties' => $room->getPropertiesForSignaling('', false),
 			],
+		]);
+		$duration = microtime(true) - $start;
+		$this->logger->debug('Removed from {token}: {users} ({duration})', [
+			'token' => $room->getToken(),
+			'users' => print_r($sessionIds, true),
+			'duration' => sprintf('%.2f', $duration),
+			'app' => 'spreed-hpb',
 		]);
 	}
 
@@ -198,13 +231,19 @@ class BackendNotifier {
 	 * @throws \Exception
 	 */
 	public function roomModified(Room $room): void {
-		$this->logger->info('Room modified: ' . $room->getToken(), ['app' => 'spreed']);
+		$start = microtime(true);
 		$this->backendRequest($room, [
 			'type' => 'update',
 			'update' => [
-				'userids' => $room->getParticipantUserIds(),
+				'userids' => $this->participantService->getParticipantUserIds($room),
 				'properties' => $room->getPropertiesForSignaling(''),
 			],
+		]);
+		$duration = microtime(true) - $start;
+		$this->logger->debug('Room modified: {token} ({duration})', [
+			'token' => $room->getToken(),
+			'duration' => sprintf('%.2f', $duration),
+			'app' => 'spreed-hpb',
 		]);
 	}
 
@@ -212,17 +251,22 @@ class BackendNotifier {
 	 * The given room has been deleted.
 	 *
 	 * @param Room $room
-	 * @param array $participants
+	 * @param string[] $userIds
 	 * @throws \Exception
 	 */
-	public function roomDeleted(Room $room, array $participants): void {
-		$this->logger->info('Room deleted: ' . $room->getToken(), ['app' => 'spreed']);
-		$userIds = array_keys($participants['users']);
+	public function roomDeleted(Room $room, array $userIds): void {
+		$start = microtime(true);
 		$this->backendRequest($room, [
 			'type' => 'delete',
 			'delete' => [
 				'userids' => $userIds,
 			],
+		]);
+		$duration = microtime(true) - $start;
+		$this->logger->debug('Room deleted: {token} ({duration})', [
+			'token' => $room->getToken(),
+			'duration' => sprintf('%.2f', $duration),
+			'app' => 'spreed-hpb',
 		]);
 	}
 
@@ -234,38 +278,70 @@ class BackendNotifier {
 	 * @throws \Exception
 	 */
 	public function participantsModified(Room $room, array $sessionIds): void {
-		$this->logger->info('Room participants modified: ' . $room->getToken() . ' ' . print_r($sessionIds, true), ['app' => 'spreed']);
 		$changed = [];
 		$users = [];
-		$participants = $room->getParticipantsLegacy();
-		foreach ($participants['users'] as $userId => $participant) {
-			$participant['userId'] = $userId;
-			$users[] = $participant;
-			if (\in_array($participant['sessionId'], $sessionIds, true)) {
-				$participant['permissions'] = ['publish-media', 'publish-screen'];
-				if ($participant['participantType'] === Participant::OWNER ||
-						$participant['participantType'] === Participant::MODERATOR) {
-					$participant['permissions'][] = 'control';
+		$participants = $this->participantService->getSessionsAndParticipantsForRoom($room);
+		foreach ($participants as $participant) {
+			$attendee = $participant->getAttendee();
+			if ($attendee->getActorType() !== Attendee::ACTOR_USERS
+				&& $attendee->getActorType() !== Attendee::ACTOR_GUESTS) {
+				continue;
+			}
+
+			$data = [
+				'inCall' => Participant::FLAG_DISCONNECTED,
+				'lastPing' => 0,
+				'sessionId' => '0',
+				'participantType' => $attendee->getParticipantType(),
+				'participantPermissions' => Attendee::PERMISSIONS_CUSTOM,
+			];
+			if ($attendee->getActorType() === Attendee::ACTOR_USERS) {
+				$data['userId'] = $attendee->getActorId();
+			}
+
+			$session = $participant->getSession();
+			if ($session instanceof Session) {
+				$data['inCall'] = $session->getInCall();
+				$data['lastPing'] = $session->getLastPing();
+				$data['sessionId'] = $session->getSessionId();
+				$data['participantPermissions'] = $participant->getPermissions();
+				$users[] = $data;
+
+				if (\in_array($session->getSessionId(), $sessionIds, true)) {
+					$data['permissions'] = [];
+					if ($participant->getPermissions() & Attendee::PERMISSIONS_PUBLISH_AUDIO) {
+						$data['permissions'][] = 'publish-audio';
+					}
+					if ($participant->getPermissions() & Attendee::PERMISSIONS_PUBLISH_VIDEO) {
+						$data['permissions'][] = 'publish-video';
+					}
+					if ($participant->getPermissions() & Attendee::PERMISSIONS_PUBLISH_SCREEN) {
+						$data['permissions'][] = 'publish-screen';
+					}
+					if ($participant->hasModeratorPermissions(false)) {
+						$data['permissions'][] = 'control';
+					}
+					$changed[] = $data;
 				}
-				$changed[] = $participant;
+			} else {
+				$users[] = $data;
 			}
 		}
-		foreach ($participants['guests'] as $participant) {
-			if (!isset($participant['participantType'])) {
-				$participant['participantType'] = Participant::GUEST;
-			}
-			$users[] = $participant;
-			if (\in_array($participant['sessionId'], $sessionIds, true)) {
-				$participant['permissions'] = ['publish-media', 'publish-screen'];
-				$changed[] = $participant;
-			}
-		}
+
+		$start = microtime(true);
 		$this->backendRequest($room, [
 			'type' => 'participants',
 			'participants' => [
 				'changed' => $changed,
 				'users' => $users
 			],
+		]);
+		$duration = microtime(true) - $start;
+		$this->logger->debug('Room participants modified: {token} {users} ({duration})', [
+			'token' => $room->getToken(),
+			'users' => print_r($sessionIds, true),
+			'duration' => sprintf('%.2f', $duration),
+			'app' => 'spreed-hpb',
 		]);
 	}
 
@@ -278,31 +354,44 @@ class BackendNotifier {
 	 * @throws \Exception
 	 */
 	public function roomInCallChanged(Room $room, int $flags, array $sessionIds): void {
-		$this->logger->info('Room in-call status changed: ' . $room->getToken() . ' ' . $flags . ' ' . print_r($sessionIds, true), ['app' => 'spreed']);
 		$changed = [];
 		$users = [];
-		$participants = $room->getParticipantsLegacy();
-		foreach ($participants['users'] as $userId => $participant) {
-			$participant['userId'] = $userId;
-			if ($participant['inCall'] !== Participant::FLAG_DISCONNECTED) {
-				$users[] = $participant;
+
+		$participants = $this->participantService->getParticipantsForAllSessions($room);
+		foreach ($participants as $participant) {
+			$session = $participant->getSession();
+			if (!$session instanceof Session) {
+				continue;
 			}
-			if (\in_array($participant['sessionId'], $sessionIds, true)) {
-				$changed[] = $participant;
+
+			$attendee = $participant->getAttendee();
+			if ($attendee->getActorType() !== Attendee::ACTOR_USERS
+				&& $attendee->getActorType() !== Attendee::ACTOR_GUESTS) {
+				continue;
 			}
-		}
-		foreach ($participants['guests'] as $participant) {
-			if (!isset($participant['participantType'])) {
-				$participant['participantType'] = Participant::GUEST;
+
+			$data = [
+				'inCall' => $session->getInCall(),
+				'lastPing' => $session->getLastPing(),
+				'sessionId' => $session->getSessionId(),
+				'nextcloudSessionId' => $session->getSessionId(),
+				'participantType' => $attendee->getParticipantType(),
+				'participantPermissions' => $participant->getPermissions(),
+			];
+			if ($attendee->getActorType() === Attendee::ACTOR_USERS) {
+				$data['userId'] = $attendee->getActorId();
 			}
-			if ($participant['inCall'] !== Participant::FLAG_DISCONNECTED) {
-				$users[] = $participant;
+
+			if ($session->getInCall() !== Participant::FLAG_DISCONNECTED) {
+				$users[] = $data;
 			}
-			if (\in_array($participant['sessionId'], $sessionIds, true)) {
-				$changed[] = $participant;
+
+			if (\in_array($session->getSessionId(), $sessionIds, true)) {
+				$changed[] = $data;
 			}
 		}
 
+		$start = microtime(true);
 		$this->backendRequest($room, [
 			'type' => 'incall',
 			'incall' => [
@@ -310,6 +399,14 @@ class BackendNotifier {
 				'changed' => $changed,
 				'users' => $users
 			],
+		]);
+		$duration = microtime(true) - $start;
+		$this->logger->debug('Room in-call status changed: {token} {flags} {users} ({duration})', [
+			'token' => $room->getToken(),
+			'flags' => $flags,
+			'users' => print_r($sessionIds, true),
+			'duration' => sprintf('%.2f', $duration),
+			'app' => 'spreed-hpb',
 		]);
 	}
 
@@ -322,11 +419,19 @@ class BackendNotifier {
 	 * @throws \Exception
 	 */
 	public function sendRoomMessage(Room $room, array $message): void {
+		$start = microtime(true);
 		$this->backendRequest($room, [
 			'type' => 'message',
 			'message' => [
 				'data' => $message,
 			],
+		]);
+		$duration = microtime(true) - $start;
+		$this->logger->debug('Send room message: {token} {message} ({duration})', [
+			'token' => $room->getToken(),
+			'message' => $message,
+			'duration' => sprintf('%.2f', $duration),
+			'app' => 'spreed-hpb',
 		]);
 	}
 }

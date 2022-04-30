@@ -27,20 +27,22 @@
 			<div class="icon icon-talk" />
 			<h2>{{ t('spreed', 'Discuss this file') }}</h2>
 			<p>{{ t('spreed', 'Share this file with others to discuss it') }}</p>
-			<button class="primary" @click="openSharingTab">
+			<Button type="primary" @click="openSharingTab">
 				{{ t('spreed', 'Share this file') }}
-			</button>
+			</Button>
 		</div>
 		<div v-else-if="isTalkSidebarSupportedForFile && !token" class="emptycontent room-not-joined">
 			<div class="icon icon-talk" />
 			<h2>{{ t('spreed', 'Discuss this file') }}</h2>
-			<button class="primary" @click="joinConversation">
+			<Button type="primary" @click="joinConversation">
 				{{ t('spreed', 'Join conversation') }}
-			</button>
+			</Button>
 		</div>
 		<template v-else>
 			<CallButton class="call-button" />
-			<ChatView :token="token" />
+			<ChatView />
+			<UploadEditor />
+			<DeviceChecker :initialize-on-mounted="false" />
 		</template>
 	</div>
 </template>
@@ -49,10 +51,7 @@
 
 import { EventBus } from './services/EventBus'
 import { getFileConversation } from './services/filesIntegrationServices'
-import { fetchConversation } from './services/conversationsService'
 import {
-	joinConversation,
-	leaveConversation,
 	leaveConversationSync,
 } from './services/participantsService'
 import CancelableRequest from './utils/cancelableRequest'
@@ -60,8 +59,14 @@ import { signalingKill } from './utils/webrtc/index'
 import { getCurrentUser } from '@nextcloud/auth'
 import { loadState } from '@nextcloud/initial-state'
 import Axios from '@nextcloud/axios'
+import UploadEditor from './components/UploadEditor'
 import CallButton from './components/TopBar/CallButton'
 import ChatView from './components/ChatView'
+import sessionIssueHandler from './mixins/sessionIssueHandler'
+import browserCheck from './mixins/browserCheck'
+import '@nextcloud/dialogs/styles/toast.scss'
+import DeviceChecker from './components/DeviceChecker/DeviceChecker.vue'
+import Button from '@nextcloud/vue/dist/Components/Button'
 
 export default {
 
@@ -70,7 +75,15 @@ export default {
 	components: {
 		CallButton,
 		ChatView,
+		UploadEditor,
+		DeviceChecker,
+		Button,
 	},
+
+	mixins: [
+		browserCheck,
+		sessionIssueHandler,
+	],
 
 	data() {
 		return {
@@ -122,6 +135,8 @@ export default {
 			immediate: true,
 			handler(isChatTheActiveTab) {
 				this.forceTabsContentStyleWhenChatTabIsActive(isChatTheActiveTab)
+				// recheck the file info in case the sharing info was changed
+				this.setTalkSidebarSupportedForFile(this.fileInfo)
 			},
 		},
 	},
@@ -151,13 +166,18 @@ export default {
 				// We have to do this synchronously, because in unload and beforeunload
 				// Promises, async and await are prohibited.
 				signalingKill()
-				leaveConversationSync(this.token)
+				if (!this.isLeavingAfterSessionIssue) {
+					leaveConversationSync(this.token)
+				}
 			}
 		})
 	},
 
 	methods: {
 		async joinConversation() {
+			// see browserCheck mixin
+			this.checkBrowser()
+
 			try {
 				await this.getFileConversation()
 			} catch (error) {
@@ -165,7 +185,7 @@ export default {
 				return
 			}
 
-			await joinConversation(this.token)
+			await this.$store.dispatch('joinConversation', { token: this.token })
 
 			// The current participant (which is automatically set when fetching
 			// the current conversation) is needed for the MessagesList to start
@@ -182,11 +202,11 @@ export default {
 			// used), although that should not be a problem given that only the
 			// "inCall" flag (which is locally updated when joining and leaving
 			// a call) is currently used.
-			if (loadState('talk', 'signaling_mode') !== 'internal') {
-				EventBus.$on('shouldRefreshConversations', OCA.Talk.fetchCurrentConversationWrapper)
-				EventBus.$on('Signaling::participantListChanged', OCA.Talk.fetchCurrentConversationWrapper)
+			if (loadState('spreed', 'signaling_mode') !== 'internal') {
+				EventBus.$on('should-refresh-conversations', OCA.Talk.fetchCurrentConversationWrapper)
+				EventBus.$on('signaling-participant-list-changed', OCA.Talk.fetchCurrentConversationWrapper)
 			} else {
-				// The "shouldRefreshConversations" event is triggered only when
+				// The "should-refresh-conversations" event is triggered only when
 				// the external signaling server is used; when the internal
 				// signaling server is used periodic polling has to be used
 				// instead.
@@ -195,18 +215,20 @@ export default {
 		},
 
 		leaveConversation() {
-			EventBus.$off('shouldRefreshConversations', OCA.Talk.fetchCurrentConversationWrapper)
-			EventBus.$off('Signaling::participantListChanged', OCA.Talk.fetchCurrentConversationWrapper)
+			EventBus.$off('should-refresh-conversations', OCA.Talk.fetchCurrentConversationWrapper)
+			EventBus.$off('signaling-participant-list-changed', OCA.Talk.fetchCurrentConversationWrapper)
 			window.clearInterval(OCA.Talk.fetchCurrentConversationIntervalId)
+
+			// TODO: move to store under a special action ?
 
 			// Remove the conversation to ensure that the old data is not used
 			// before fetching it again if this conversation is joined again.
-			this.$store.dispatch('deleteConversationByToken', this.token)
+			this.$store.dispatch('deleteConversation', this.token)
 			// Remove the participant to ensure that it will be set again fresh
 			// if this conversation is joined again.
 			this.$store.dispatch('purgeParticipantsStore', this.token)
 
-			leaveConversation(this.token)
+			this.$store.dispatch('leaveConversation', { token: this.token })
 
 			this.$store.dispatch('updateTokenAndFileIdForToken', {
 				newToken: null,
@@ -242,9 +264,7 @@ export default {
 				return
 			}
 
-			const response = await fetchConversation(this.token)
-			this.$store.dispatch('addConversation', response.data.ocs.data)
-			this.$store.dispatch('markConversationRead', this.token)
+			await this.$store.dispatch('fetchConversation', { token: this.token })
 		},
 
 		/**
@@ -340,10 +360,10 @@ export default {
 		},
 
 		/**
-		 * Dirty hack to set the style in the tabs content container.
+		 * Dirty hack to set the style in the tabs container.
 		 *
-		 * This is needed to force the scroll bars on the tab content instead of
-		 * on the whole sidebar.
+		 * This is needed to force the scroll bars on the tabs container instead
+		 * of on the whole sidebar.
 		 *
 		 * Additionally a minimum height is forced to ensure that the height of
 		 * the chat view will be at least 300px, even if the info view is large
@@ -355,20 +375,25 @@ export default {
 		 *        chat tab or not.
 		 */
 		forceTabsContentStyleWhenChatTabIsActive(isChatTheActiveTab) {
+			const tabs = document.querySelector('.app-sidebar-tabs')
 			const tabsContent = document.querySelector('.app-sidebar-tabs__content')
 
 			if (isChatTheActiveTab) {
-				this.savedTabsContentMinHeight = tabsContent.style.minHeight
+				this.savedTabsMinHeight = tabs.style.minHeight
+				this.savedTabsOverflow = tabs.style.overflow
 				this.savedTabsContentOverflow = tabsContent.style.overflow
 				this.savedTabsContentStyle = true
 
-				tabsContent.style.minHeight = '300px'
+				tabs.style.minHeight = '300px'
+				tabs.style.overflow = 'hidden'
 				tabsContent.style.overflow = 'hidden'
 			} else if (this.savedTabsContentStyle) {
-				tabsContent.style.minHeight = this.savedTabsContentMinHeight
+				tabs.style.minHeight = this.savedTabsMinHeight
+				tabs.style.overflow = this.savedTabsOverflow
 				tabsContent.style.overflow = this.savedTabsContentOverflow
 
-				delete this.savedTabsContentMinHeight
+				delete this.savedTabsMinHeight
+				delete this.savedTabsOverflow
 				delete this.savedTabsContentOverflow
 				this.savedTabsContentStyle = false
 			}
@@ -384,6 +409,19 @@ export default {
 	display: flex;
 	flex-grow: 1;
 	flex-direction: column;
+}
+
+.emptycontent {
+	/* Override default top margin set in server and center vertically
+	 * instead. */
+	margin-top: unset;
+
+	height: 100%;
+
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
 }
 
 .call-button {

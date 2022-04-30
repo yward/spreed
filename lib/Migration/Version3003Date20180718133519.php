@@ -22,16 +22,14 @@ declare(strict_types=1);
  */
 namespace OCA\Talk\Migration;
 
-use Doctrine\DBAL\Types\Type;
+use Doctrine\DBAL\Types\Types;
 use OCP\DB\ISchemaWrapper;
 use OCP\IDBConnection;
 use OCP\Migration\SimpleMigrationStep;
 use OCP\Migration\IOutput;
 
 class Version3003Date20180718133519 extends SimpleMigrationStep {
-
-	/** @var IDBConnection */
-	protected $connection;
+	protected IDBConnection $connection;
 
 	public function __construct(IDBConnection $connection) {
 		$this->connection = $connection;
@@ -51,7 +49,7 @@ class Version3003Date20180718133519 extends SimpleMigrationStep {
 		$table = $schema->getTable('talk_rooms');
 
 		if (!$table->hasColumn('last_message')) {
-			$table->addColumn('last_message', Type::BIGINT, [
+			$table->addColumn('last_message', Types::BIGINT, [
 				'notnull' => false,
 				'default' => 0,
 			]);
@@ -79,11 +77,11 @@ class Version3003Date20180718133519 extends SimpleMigrationStep {
 			->where($query->expr()->eq('object_type', $query->createNamedParameter('chat')))
 			->groupBy('object_id');
 
-		$result = $query->execute();
+		$result = $query->executeQuery();
 		while ($row = $result->fetch()) {
 			$update->setParameter('message', $row['message'])
 				->setParameter('room', $row['object_id']);
-			$update->execute();
+			$update->executeStatement();
 		}
 		$result->closeCursor();
 	}

@@ -25,12 +25,11 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Command\Room;
 
-use Exception;
+use InvalidArgumentException;
 use OC\Core\Command\Base;
 use OCA\Talk\Exceptions\RoomNotFoundException;
-use OCA\Talk\Manager;
 use OCA\Talk\Room;
-use OCP\IUserManager;
+use Stecman\Component\Symfony\Console\BashCompletion\CompletionContext;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -38,19 +37,6 @@ use Symfony\Component\Console\Output\OutputInterface;
 
 class Update extends Base {
 	use TRoomCommand;
-
-	/** @var IUserManager */
-	public $userManager;
-
-	/** @var Manager */
-	public $manager;
-
-	public function __construct(IUserManager $userManager, Manager $manager) {
-		parent::__construct();
-
-		$this->userManager = $userManager;
-		$this->manager = $manager;
-	}
 
 	protected function configure(): void {
 		$this
@@ -66,6 +52,11 @@ class Update extends Base {
 				InputOption::VALUE_REQUIRED,
 				'Sets a new name for the room'
 			)->addOption(
+				'description',
+				null,
+				InputOption::VALUE_REQUIRED,
+				'Sets a new description for the room'
+			)->addOption(
 				'public',
 				null,
 				InputOption::VALUE_REQUIRED,
@@ -75,6 +66,11 @@ class Update extends Base {
 				null,
 				InputOption::VALUE_REQUIRED,
 				'Modifies the room to be read-only (value 1) or read-write (value 0)'
+			)->addOption(
+				'listable',
+				null,
+				InputOption::VALUE_REQUIRED,
+				'Modifies the room\'s listable scope'
 			)->addOption(
 				'password',
 				null,
@@ -88,11 +84,13 @@ class Update extends Base {
 			);
 	}
 
-	protected function execute(InputInterface $input, OutputInterface $output): ?int {
+	protected function execute(InputInterface $input, OutputInterface $output): int {
 		$token = $input->getArgument('token');
 		$name = $input->getOption('name');
+		$description = $input->getOption('description');
 		$public = $input->getOption('public');
 		$readOnly = $input->getOption('readonly');
+		$listable = $input->getOption('listable');
 		$password = $input->getOption('password');
 		$owner = $input->getOption('owner');
 
@@ -101,8 +99,18 @@ class Update extends Base {
 			return 1;
 		}
 
-		if (!in_array($readOnly, [null, '0', '1'], true)) {
+		if (!in_array($readOnly, [null, (string)Room::READ_WRITE, (string)Room::READ_ONLY], true)) {
 			$output->writeln('<error>Invalid value for option "--readonly" given.</error>');
+			return 1;
+		}
+
+		if (!in_array($listable, [
+			null,
+			(string)Room::LISTABLE_NONE,
+			(string)Room::LISTABLE_USERS,
+			(string)Room::LISTABLE_ALL,
+		], true)) {
+			$output->writeln('<error>Invalid value for option "--listable" given.</error>');
 			return 1;
 		}
 
@@ -113,7 +121,7 @@ class Update extends Base {
 			return 1;
 		}
 
-		if (!in_array($room->getType(), [Room::GROUP_CALL, Room::PUBLIC_CALL], true)) {
+		if (!in_array($room->getType(), [Room::TYPE_GROUP, Room::TYPE_PUBLIC], true)) {
 			$output->writeln('<error>Room is no group call.</error>');
 			return 1;
 		}
@@ -123,12 +131,20 @@ class Update extends Base {
 				$this->setRoomName($room, $name);
 			}
 
+			if ($description !== null) {
+				$this->setRoomDescription($room, $description);
+			}
+
 			if ($public !== null) {
 				$this->setRoomPublic($room, ($public === '1'));
 			}
 
 			if ($readOnly !== null) {
 				$this->setRoomReadOnly($room, ($readOnly === '1'));
+			}
+
+			if ($listable !== null) {
+				$this->setRoomListable($room, (int)$listable);
 			}
 
 			if ($password !== null) {
@@ -142,12 +158,40 @@ class Update extends Base {
 					$this->unsetRoomOwner($room);
 				}
 			}
-		} catch (Exception $e) {
+		} catch (InvalidArgumentException $e) {
 			$output->writeln(sprintf('<error>%s</error>', $e->getMessage()));
 			return 1;
 		}
 
 		$output->writeln('<info>Room successfully updated.</info>');
 		return 0;
+	}
+
+	public function completeOptionValues($optionName, CompletionContext $context) {
+		switch ($optionName) {
+			case 'public':
+			case 'readonly':
+				return [(string)Room::READ_ONLY, (string)Room::READ_WRITE];
+			case 'listable':
+				return [
+					(string)Room::LISTABLE_ALL,
+					(string)Room::LISTABLE_USERS,
+					(string)Room::LISTABLE_NONE,
+				];
+
+			case 'owner':
+				return $this->completeParticipantValues($context);
+		}
+
+		return parent::completeOptionValues($optionName, $context);
+	}
+
+	public function completeArgumentValues($argumentName, CompletionContext $context) {
+		switch ($argumentName) {
+			case 'token':
+				return $this->completeTokenValues($context);
+		}
+
+		return parent::completeArgumentValues($argumentName, $context);
 	}
 }

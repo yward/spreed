@@ -21,8 +21,7 @@
 
 <template>
 	<div class="set-conversation-name">
-		<input
-			ref="conversationName"
+		<input ref="conversationName"
 			v-observe-visibility="visibilityChanged"
 			type="text"
 			:value="value"
@@ -56,7 +55,7 @@ export default {
 		},
 		// Forward the keydown event to the parent
 		handleKeydown() {
-			this.$emit('clickEnter')
+			this.$emit('click-enter')
 		},
 	},
 

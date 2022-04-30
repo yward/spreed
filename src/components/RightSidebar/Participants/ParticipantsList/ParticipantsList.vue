@@ -22,16 +22,15 @@
 <template>
 	<div>
 		<ul>
-			<Participant
-				v-for="item in items"
-				:key="item.id"
+			<Participant v-for="item in items"
+				:key="generateKey(item)"
 				:participant="item"
 				:is-selectable="participantsSelectable"
-				@clickParticipant="handleClickParticipant" />
+				:show-user-status="showUserStatus"
+				@click-participant="handleClickParticipant" />
 		</ul>
 		<template v-if="loading">
-			<LoadingParticipant
-				v-for="n in dummyParticipants"
+			<LoadingParticipant v-for="n in dummyParticipants"
 				:key="n" />
 		</template>
 	</div>
@@ -69,6 +68,10 @@ export default {
 			return this.$store.getters.getToken()
 		},
 
+		showUserStatus() {
+			return this.items.length < 100
+		},
+
 		dummyParticipants() {
 			const dummies = 6 - this.items.length
 			return dummies > 0 ? dummies : 0
@@ -83,6 +86,18 @@ export default {
 	methods: {
 		async handleClickParticipant(participant) {
 			this.$emit('click', participant)
+		},
+
+		generateKey(participant) {
+			let key = ''
+			if (participant.attendeeId) {
+				// Attendee from participant list
+				key = 'attendee#' + participant.attendeeId
+			} else if (participant.source) {
+				// Search result candidate
+				key = 'search#' + participant.source + '#' + participant.id
+			}
+			return key
 		},
 	},
 }

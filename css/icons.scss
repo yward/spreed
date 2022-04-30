@@ -8,9 +8,14 @@
 @include icon-black-white('emoji-smile', 'spreed', 1);
 @include icon-black-white('lobby', 'spreed', 1);
 @include icon-black-white('text', 'filetypes', 1, true);
+@include icon-black-white('promoted-view', 'spreed', 1);
+@include icon-black-white('grid-view', 'spreed', 1);
+@include icon-black-white('folder-multiple-image', 'spreed', 1);
 
 .app-talk,
 .talk-modal,
+.talk-sidebar-callview,
+#talk-panel,
 #talk-sidebar,
 #call-container,
 .talkChatTab {
@@ -63,18 +68,6 @@
 		&.icon-grid-view {
 			background-image: url(icon-color-path('toggle-pictures', 'actions', 'fff', 1, true));
 		}
-		&.icon-audio {
-			background-image: url(icon-color-path('audio', 'actions', 'fff', 1, true));
-		}
-		&.icon-audio-off {
-			background-image: url(icon-color-path('audio-off', 'actions', 'fff', 1, true));
-		}
-		&.icon-video {
-			background-image: url(icon-color-path('video', 'actions', 'fff', 1, true));
-		}
-		&.icon-video-off {
-			background-image: url(icon-color-path('video-off', 'actions', 'fff', 1, true));
-		}
 		&.icon-screen {
 			background-image: url(icon-color-path('screen', 'actions', 'fff', 1, true));
 		}
@@ -105,6 +98,13 @@
 		background-image: url(icon-color-path('video-off', 'actions', 'fff', 1, true));
 	}
 
+	// Patch material design icons' span wrong height
+	.material-design-icon {
+		display: contents;
+	}
+}
+
+.popover.vue-popover-theme.open {
 	.icon-delete-critical {
 		@include icon-color('delete', 'actions', $color-error, 1, true);
 		&:hover,
@@ -127,6 +127,6 @@
 .app-files {
 	// Needed to use white color also in dark mode.
 	.app-sidebar__close.forced-white {
-		background-image: url(icon-color-path('close', 'actions', 'fff', 1, true));
+		color: #ffffff;
 	}
 }

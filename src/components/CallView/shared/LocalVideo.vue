@@ -21,46 +21,62 @@
 <template>
 	<div id="localVideoContainer"
 		class="videoContainer videoView"
-		:class="{ speaking: localMediaModel.attributes.speaking, 'video-container-grid': isGrid, 'video-container-stripe': isStripe }">
-		<video v-show="localMediaModel.attributes.videoEnabled"
-			id="localVideo"
-			ref="video"
-			:class="videoClass"
-			class="video" />
+		:class="videoContainerClass"
+		@mouseover="showShadow"
+		@mouseleave="hideShadow"
+		@click="handleClickVideo">
+		<div v-show="localMediaModel.attributes.videoEnabled"
+			:class="videoWrapperClass"
+			class="videoWrapper">
+			<video id="localVideo"
+				ref="video"
+				disablePictureInPicture="true"
+				:class="videoClass"
+				class="video" />
+		</div>
 		<div v-if="!localMediaModel.attributes.videoEnabled && !isSidebar" class="avatar-container">
-			<VideoBackground v-if="isGrid || isStripe" :display-name="displayName" :user="userId" />
+			<VideoBackground v-if="isGrid || isStripe"
+				:display-name="displayName"
+				:user="userId" />
 			<Avatar v-if="userId"
 				:size="avatarSize"
 				:disable-menu="true"
 				:disable-tooltip="true"
+				:show-user-status="false"
 				:user="userId"
-				:display-name="displayName" />
+				:display-name="displayName"
+				:class="avatarClass" />
 			<div v-if="!userId"
-				:class="avatarSizeClass"
+				:class="guestAvatarClass"
 				class="avatar guest">
 				{{ firstLetterOfGuestName }}
 			</div>
 		</div>
-		<transition name="fade">
-			<LocalMediaControls
-				ref="localMediaControls"
-				:model="localMediaModel"
-				:local-call-participant-model="localCallParticipantModel"
-				:screen-sharing-button-hidden="isSidebar"
-				@switchScreenToId="$emit('switchScreenToId', $event)" />
-		</transition>
+
+		<div v-if="mouseover && isSelectable" class="hover-shadow" />
+		<div class="bottom-bar">
+			<button v-if="isBig"
+				class="bottom-bar__button"
+				@click="handleStopFollowing">
+				{{ stopFollowingLabel }}
+			</button>
+		</div>
 	</div>
 </template>
 
 <script>
 import attachMediaStream from 'attachmediastream'
 import Avatar from '@nextcloud/vue/dist/Components/Avatar'
-import LocalMediaControls from './LocalMediaControls'
 import Hex from 'crypto-js/enc-hex'
 import SHA1 from 'crypto-js/sha1'
-import { showInfo } from '@nextcloud/dialogs'
-import video from './video.js'
+import {
+	showError,
+	showInfo,
+	TOAST_PERMANENT_TIMEOUT,
+} from '@nextcloud/dialogs'
+import video from '../../../mixins/video.js'
 import VideoBackground from './VideoBackground'
+import { ConnectionState } from '../../../utils/webrtc/models/CallParticipantModel'
 
 export default {
 
@@ -68,13 +84,16 @@ export default {
 
 	components: {
 		Avatar,
-		LocalMediaControls,
 		VideoBackground,
 	},
 
 	mixins: [video],
 
 	props: {
+		token: {
+			type: String,
+			required: true,
+		},
 		localMediaModel: {
 			type: Object,
 			required: true,
@@ -95,9 +114,40 @@ export default {
 			type: Boolean,
 			default: false,
 		},
+		showControls: {
+			type: Boolean,
+			default: true,
+		},
+	},
+
+	data() {
+		return {
+			notificationHandle: null,
+		}
 	},
 
 	computed: {
+		stopFollowingLabel() {
+			return t('spreed', 'Back')
+		},
+
+		isNotConnected() {
+			// When there is no sender participant (when the MCU is not used, or
+			// if it is used but no peer object has been set yet) the local
+			// video is shown as connected.
+			return this.localCallParticipantModel.attributes.peerNeeded
+				&& this.localCallParticipantModel.attributes.connectionState !== ConnectionState.CONNECTED && this.localCallParticipantModel.attributes.connectionState !== ConnectionState.COMPLETED
+		},
+
+		videoContainerClass() {
+			return {
+				'not-connected': this.isNotConnected,
+				speaking: this.localMediaModel.attributes.speaking,
+				'video-container-grid': this.isGrid,
+				'video-container-stripe': this.isStripe,
+				'video-container-big': this.isBig,
+			}
+		},
 
 		userId() {
 			return this.$store.getters.getUserId()
@@ -123,12 +173,42 @@ export default {
 			)
 		},
 
+		videoWrapperClass() {
+			return {
+				'icon-loading': this.isNotConnected,
+			}
+		},
+
 		avatarSize() {
 			return this.useConstrainedLayout ? 64 : 128
 		},
 
-		avatarSizeClass() {
-			return 'avatar-' + this.avatarSize + 'px'
+		avatarClass() {
+			return {
+				'icon-loading': this.isNotConnected,
+			}
+		},
+
+		guestAvatarClass() {
+			return Object.assign(this.avatarClass, {
+				['avatar-' + this.avatarSize + 'px']: true,
+			})
+		},
+
+		localStreamVideoError() {
+			return this.localMediaModel.attributes.localStream && this.localMediaModel.attributes.localStreamRequestVideoError
+		},
+
+		hasLocalVideo() {
+			return this.localMediaModel.attributes.videoEnabled
+		},
+
+		isSelected() {
+			return this.$store.getters.selectedVideoPeerId === 'local'
+		},
+
+		isSelectable() {
+			return !this.isSidebar && this.hasLocalVideo && this.$store.getters.selectedVideoPeerId !== 'local'
 		},
 	},
 
@@ -137,7 +217,7 @@ export default {
 		localCallParticipantModel: {
 			immediate: true,
 
-			handler: function(localCallParticipantModel, oldLocalCallParticipantModel) {
+			handler(localCallParticipantModel, oldLocalCallParticipantModel) {
 				if (oldLocalCallParticipantModel) {
 					oldLocalCallParticipantModel.off('forcedMute', this._handleForcedMute)
 				}
@@ -148,8 +228,30 @@ export default {
 			},
 		},
 
-		'localMediaModel.attributes.localStream': function(localStream) {
+		'localMediaModel.attributes.localStream'(localStream) {
 			this._setLocalStream(localStream)
+		},
+
+		localStreamVideoError: {
+			immediate: true,
+
+			handler(error) {
+				if (error) {
+					if (error.name === 'NotAllowedError') {
+						this.notificationHandle = showError(t('spreed', 'Access to camera was denied'))
+					} else if (error.name === 'NotReadableError' || error.name === 'AbortError') {
+						// when camera in use, Chrome gives NotReadableError, Firefox gives AbortError
+						this.notificationHandle = showError(t('spreed', 'Error while accessing camera: It is likely in use by another program'), {
+							timeout: TOAST_PERMANENT_TIMEOUT,
+						})
+					} else {
+						console.error('Error while accessing camera: ', error.message, error.name)
+						this.notificationHandle = showError(t('spreed', 'Error while accessing camera'), {
+							timeout: TOAST_PERMANENT_TIMEOUT,
+						})
+					}
+				}
+			},
 		},
 
 	},
@@ -160,6 +262,9 @@ export default {
 	},
 
 	destroyed() {
+		if (this.notificationHandle) {
+			this.notificationHandle.hideToast()
+		}
 		if (this.localCallParticipantModel) {
 			this.localCallParticipantModel.off('forcedMute', this._handleForcedMute)
 		}
@@ -191,16 +296,27 @@ export default {
 			attachMediaStream(localStream, this.$refs.video, options)
 		},
 
+		handleStopFollowing() {
+			this.$store.dispatch('selectedVideoPeerId', null)
+			this.$store.dispatch('stopPresentation')
+		},
 	},
 
 }
 </script>
 
 <style lang="scss" scoped>
-@import '../../../assets/variables.scss';
-@import '../../../assets/avatar.scss';
+@import '../../../assets/variables';
+@import '../../../assets/avatar';
 @include avatar-mixin(64px);
 @include avatar-mixin(128px);
+
+.not-connected {
+	video,
+	.avatar-container {
+		opacity: 0.5;
+	}
+}
 
 .video-container-grid {
 	position:relative;
@@ -211,18 +327,26 @@ export default {
 	flex-direction: column;
 }
 
-.video-container-stripe {
+.video-container-stripe:not(.local-video--sidebar) {
 	position:relative;
-	height: 100%;
 	flex: 0 0 300px;
 	overflow: hidden;
 	display: flex;
 	flex-direction: column;
+	margin-top: 8px;
+	height: 242px !important;
 }
 
+.videoWrapper,
 .video {
 	height: 100%;
 	width: 100%;
+}
+
+.videoWrapper.icon-loading:after {
+	height: 60px;
+	width: 60px;
+	margin: -32px 0 0 -32px;
 }
 
 .video--fit {
@@ -237,6 +361,54 @@ export default {
 
 .avatar-container {
 	margin: auto;
+}
+
+.video-container-big {
+	position: absolute;
+	width: calc(100% - 16px);
+	height: calc(100% - 8px);
+}
+
+.hover-shadow {
+	position: absolute;
+	height: 100%;
+	width: 100%;
+	top: 0;
+	left: 0;
+	box-shadow: inset 0 0 0 3px white;
+	cursor: pointer;
+	border-radius: var(--border-radius-large);
+}
+
+.bottom-bar {
+	position: absolute;
+	bottom: 0;
+	width: 100%;
+	padding: 0 20px 12px 24px;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	height: 40px;
+	&--big {
+		justify-content: center;
+		height: 48px;
+	}
+	&__button {
+		opacity: 0.8;
+		margin-left: 4px;
+		border: none;
+		&:hover,
+		&:focus {
+			opacity: 1;
+			border: none;
+		}
+	}
+}
+
+// Always display the local video in the last row
+#localVideoContainer {
+	grid-row-end: -1;
+	border-radius: var(--border-radius-large);
 }
 
 </style>

@@ -28,7 +28,7 @@
 			placeholder="wss://signaling.example.org"
 			:value="server"
 			:disabled="loading"
-			:aria-label="t('spreed', 'Signaling server URL')"
+			:aria-label="t('spreed', 'High-performance backend URL')"
 			@input="updateServer">
 		<input :id="'verify' + index"
 			type="checkbox"
@@ -118,7 +118,7 @@ export default {
 
 	methods: {
 		removeServer() {
-			this.$emit('removeServer', this.index)
+			this.$emit('remove-server', this.index)
 		},
 		updateServer(event) {
 			this.$emit('update:server', event.target.value)
@@ -140,9 +140,14 @@ export default {
 			} catch (exception) {
 				this.checked = true
 				if (exception.response.data.ocs.data.error === 'CAN_NOT_CONNECT') {
-					this.errorMessage = t('spreed', 'Error: Can not connect to server')
+					this.errorMessage = t('spreed', 'Error: Cannot connect to server')
 				} else if (exception.response.data.ocs.data.error === 'JSON_INVALID') {
 					this.errorMessage = t('spreed', 'Error: Server did not respond with proper JSON')
+				} else if (exception.response.data.ocs.data.error === 'UPDATE_REQUIRED') {
+					this.versionFound = exception.response.data.ocs.data.version || t('spreed', 'Could not get version')
+					this.errorMessage = t('spreed', 'Error: Running version: {version}; Server needs to be updated to be compatible with this version of Talk', {
+						version: this.versionFound,
+					})
 				} else if (exception.response.data.ocs.data.error) {
 					this.errorMessage = t('spreed', 'Error: Server responded with: {error}', exception.response.data.ocs.data)
 				} else {

@@ -31,9 +31,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class Delete extends Base {
-
-	/** @var CommandService */
-	private $service;
+	private CommandService $service;
 
 	public function __construct(CommandService $service) {
 		parent::__construct();
@@ -50,7 +48,7 @@ class Delete extends Base {
 			);
 	}
 
-	protected function execute(InputInterface $input, OutputInterface $output) {
+	protected function execute(InputInterface $input, OutputInterface $output): int {
 		$id = (int) $input->getArgument('command-id');
 
 		try {
@@ -62,5 +60,6 @@ class Delete extends Base {
 			$output->writeln('<error>The help command cannot be deleted</error>');
 			return 2;
 		}
+		return 0;
 	}
 }

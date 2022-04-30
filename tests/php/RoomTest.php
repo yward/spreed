@@ -25,13 +25,14 @@ namespace OCA\Talk\Tests\php;
 use OC\EventDispatcher\EventDispatcher;
 use OCA\Talk\Events\VerifyRoomPasswordEvent;
 use OCA\Talk\Manager;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCA\Talk\Webinary;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\IDBConnection;
-use OCP\ILogger;
 use OCP\Security\IHasher;
-use OCP\Security\ISecureRandom;
+use Psr\Log\LoggerInterface;
 use Test\TestCase;
 
 class RoomTest extends TestCase {
@@ -39,7 +40,7 @@ class RoomTest extends TestCase {
 		$dispatcher = new EventDispatcher(
 			new \Symfony\Component\EventDispatcher\EventDispatcher(),
 			\OC::$server,
-			$this->createMock(ILogger::class)
+			$this->createMock(LoggerInterface::class)
 		);
 		$dispatcher->addListener(Room::EVENT_PASSWORD_VERIFY, static function (VerifyRoomPasswordEvent $event) {
 			$password = $event->getPassword();
@@ -56,22 +57,33 @@ class RoomTest extends TestCase {
 		$room = new Room(
 			$this->createMock(Manager::class),
 			$this->createMock(IDBConnection::class),
-			$this->createMock(ISecureRandom::class),
 			$dispatcher,
 			$this->createMock(ITimeFactory::class),
 			$this->createMock(IHasher::class),
 			1,
-			Room::PUBLIC_CALL,
+			Room::TYPE_PUBLIC,
 			Room::READ_WRITE,
+			Room::LISTABLE_NONE,
 			Webinary::LOBBY_NONE,
+			0,
 			null,
 			'foobar',
 			'Test',
+			'description',
 			'passy',
+			'',
+			'',
+			0,
+			Attendee::PERMISSIONS_DEFAULT,
+			Attendee::PERMISSIONS_DEFAULT,
+			Participant::FLAG_DISCONNECTED,
+			null,
+			null,
 			0,
 			null,
 			null,
-			0
+			'',
+			''
 		);
 		$verificationResult = $room->verifyPassword('1234');
 		$this->assertSame($verificationResult, ['result' => true, 'url' => '']);

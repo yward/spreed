@@ -3,7 +3,7 @@
  *
  * @author Julius Härtl <jus@bitgrid.net>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -19,7 +19,64 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
  */
+
+// eslint-disable-next-line node/no-unpublished-import
+import 'regenerator-runtime/runtime'
+import Vue from 'vue'
+
+jest.mock('extendable-media-recorder', () => ({
+	MediaRecorder: jest.fn(),
+	register: jest.fn(),
+}))
+
+jest.mock('extendable-media-recorder-wav-encoder', () => ({
+	connect: jest.fn(),
+}))
+
+global.appName = 'spreed'
+
 global.OC = {
 	requestToken: '123',
+	webroot: '/nc-webroot',
+	coreApps: [
+		'core',
+	],
+	config: {
+		modRewriteWorking: true,
+	},
+	dialogs: {
+	},
+	isUserAdmin() {
+		return true
+	},
+	getLanguage() {
+		return 'en-GB'
+	},
+	getLocale() {
+		return 'en_GB'
+	},
+
+	MimeType: {
+		getIconUrl: jest.fn(),
+	},
 }
-global.t = (app, text) => text
+global.OCA = {
+	Talk: {
+	},
+}
+
+// Work around missing "URL.createObjectURL" (which is used in the code but not
+// relevant for the tests) in jsdom:
+// https://github.com/jsdom/jsdom/issues/1721
+window.URL.createObjectURL = function() {
+	console.warn('URL.createObjectURL is not implemented in jsdom')
+}
+
+// TODO: use nextcloud-l10n lib once https://github.com/nextcloud/nextcloud-l10n/issues/271 is solved
+global.t = jest.fn().mockImplementation((app, text) => text)
+global.n = jest.fn().mockImplementation((app, text) => text)
+
+Vue.prototype.t = global.t
+Vue.prototype.n = global.n
+Vue.prototype.OC = OC
+Vue.prototype.OCA = OCA

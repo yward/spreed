@@ -25,11 +25,14 @@ namespace OCA\Talk\Middleware;
 
 use OCA\Talk\Controller\AEnvironmentAwareController;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
+use OCA\Talk\Exceptions\PermissionsException;
 use OCA\Talk\Exceptions\RoomNotFoundException;
 use OCA\Talk\Manager;
 use OCA\Talk\Middleware\Exceptions\LobbyException;
 use OCA\Talk\Middleware\Exceptions\NotAModeratorException;
 use OCA\Talk\Middleware\Exceptions\ReadOnlyException;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCA\Talk\TalkSession;
 use OCA\Talk\Webinary;
@@ -44,17 +47,11 @@ use OCP\AppFramework\Utility\IControllerMethodReflector;
 use OCP\IRequest;
 
 class InjectionMiddleware extends Middleware {
-
-	/** @var IRequest */
-	private $request;
-	/** @var IControllerMethodReflector */
-	private $reflector;
-	/** @var TalkSession */
-	private $talkSession;
-	/** @var Manager */
-	private $manager;
-	/** @var ?string */
-	private $userId;
+	private IRequest $request;
+	private IControllerMethodReflector $reflector;
+	private TalkSession $talkSession;
+	private Manager $manager;
+	private ?string $userId;
 
 	public function __construct(IRequest $request,
 								IControllerMethodReflector $reflector,
@@ -101,6 +98,10 @@ class InjectionMiddleware extends Middleware {
 			$this->getLoggedInOrGuest($controller, true);
 		}
 
+		if ($this->reflector->hasAnnotation('RequireRoom')) {
+			$this->getRoom($controller);
+		}
+
 		if ($this->reflector->hasAnnotation('RequireReadWriteConversation')) {
 			$this->checkReadOnlyState($controller);
 		}
@@ -108,6 +109,20 @@ class InjectionMiddleware extends Middleware {
 		if ($this->reflector->hasAnnotation('RequireModeratorOrNoLobby')) {
 			$this->checkLobbyState($controller);
 		}
+
+		$requiredPermissions = $this->reflector->getAnnotationParameter('RequirePermissions', 'permissions');
+		if ($requiredPermissions) {
+			$this->checkPermissions($controller, $requiredPermissions);
+		}
+	}
+
+	/**
+	 * @param AEnvironmentAwareController $controller
+	 */
+	protected function getRoom(AEnvironmentAwareController $controller): void {
+		$token = $this->request->getParam('token');
+		$room = $this->manager->getRoomByToken($token);
+		$controller->setRoom($room);
 	}
 
 	/**
@@ -117,10 +132,11 @@ class InjectionMiddleware extends Middleware {
 	 */
 	protected function getLoggedIn(AEnvironmentAwareController $controller, bool $moderatorRequired): void {
 		$token = $this->request->getParam('token');
-		$room = $this->manager->getRoomForParticipantByToken($token, $this->userId);
+		$sessionId = $this->talkSession->getSessionForRoom($token);
+		$room = $this->manager->getRoomForUserByToken($token, $this->userId, $sessionId);
 		$controller->setRoom($room);
 
-		$participant = $room->getParticipant($this->userId);
+		$participant = $room->getParticipant($this->userId, $sessionId);
 		$controller->setParticipant($participant);
 
 		if ($moderatorRequired && !$participant->hasModeratorPermissions(false)) {
@@ -135,17 +151,32 @@ class InjectionMiddleware extends Middleware {
 	 * @throws ParticipantNotFoundException
 	 */
 	protected function getLoggedInOrGuest(AEnvironmentAwareController $controller, bool $moderatorRequired): void {
-		$token = $this->request->getParam('token');
-		$room = $this->manager->getRoomForParticipantByToken($token, $this->userId);
-		$controller->setRoom($room);
-
-		if ($this->userId !== null) {
-			$participant = $room->getParticipant($this->userId);
-		} else {
+		$room = $controller->getRoom();
+		if (!$room instanceof Room) {
+			$token = $this->request->getParam('token');
 			$sessionId = $this->talkSession->getSessionForRoom($token);
-			$participant = $room->getParticipantBySession($sessionId);
+			$room = $this->manager->getRoomForUserByToken($token, $this->userId, $sessionId);
+			$controller->setRoom($room);
 		}
-		$controller->setParticipant($participant);
+
+		$participant = $controller->getParticipant();
+		if (!$participant instanceof Participant) {
+			$participant = null;
+			if ($sessionId !== null) {
+				try {
+					$participant = $room->getParticipantBySession($sessionId);
+				} catch (ParticipantNotFoundException $e) {
+					// ignore and fall back in case a concurrent request might have
+					// invalidated the session
+				}
+			}
+
+			if ($participant === null) {
+				$participant = $room->getParticipant($this->userId);
+			}
+
+			$controller->setParticipant($participant);
+		}
 
 		if ($moderatorRequired && !$participant->hasModeratorPermissions()) {
 			throw new NotAModeratorException();
@@ -165,6 +196,24 @@ class InjectionMiddleware extends Middleware {
 
 	/**
 	 * @param AEnvironmentAwareController $controller
+	 * @throws PermissionsException
+	 */
+	protected function checkPermissions(AEnvironmentAwareController $controller, string $permissions): void {
+		$textPermissions = explode(',', $permissions);
+		$participant = $controller->getParticipant();
+		if (!$participant instanceof Participant) {
+			throw new PermissionsException();
+		}
+
+		foreach ($textPermissions as $textPermission) {
+			if ($textPermission === 'chat' && !($participant->getPermissions() & Attendee::PERMISSIONS_CHAT)) {
+				throw new PermissionsException();
+			}
+		}
+	}
+
+	/**
+	 * @param AEnvironmentAwareController $controller
 	 * @throws LobbyException
 	 */
 	protected function checkLobbyState(AEnvironmentAwareController $controller): void {
@@ -173,6 +222,12 @@ class InjectionMiddleware extends Middleware {
 			return;
 		} catch (NotAModeratorException $e) {
 		} catch (ParticipantNotFoundException $e) {
+		}
+
+		$participant = $controller->getParticipant();
+		if ($participant instanceof Participant &&
+			$participant->getPermissions() & Attendee::PERMISSIONS_LOBBY_IGNORE) {
+			return;
 		}
 
 		$room = $controller->getRoom();
@@ -207,7 +262,8 @@ class InjectionMiddleware extends Middleware {
 		}
 
 		if ($exception instanceof NotAModeratorException ||
-			$exception instanceof ReadOnlyException) {
+			$exception instanceof ReadOnlyException ||
+			$exception instanceof PermissionsException) {
 			if ($controller instanceof OCSController) {
 				throw new OCSException('', Http::STATUS_FORBIDDEN);
 			}

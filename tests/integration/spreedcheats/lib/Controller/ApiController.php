@@ -1,4 +1,6 @@
 <?php
+
+declare(strict_types=1);
 /**
  * @author Joas Schilling <coding@schilljs.com>
  *
@@ -34,12 +36,10 @@ class ApiController extends OCSController {
 	/** @var IDBConnection */
 	private $db;
 
-	/**
-	 * @param string $appName
-	 * @param IRequest $request
-	 * @param IDBConnection $db
-	 */
-	public function __construct($appName, IRequest $request, IDBConnection $db) {
+	public function __construct(string $appName,
+								IRequest $request,
+								IDBConnection $db
+	) {
 		parent::__construct($appName, $request);
 		$this->db = $db;
 	}
@@ -49,23 +49,50 @@ class ApiController extends OCSController {
 	 *
 	 * @return DataResponse
 	 */
-	public function resetSpreed() {
-		$query = $this->db->getQueryBuilder();
-		$query->delete('talk_signaling')->execute();
+	public function resetSpreed(): DataResponse {
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('talk_attachments')->executeStatement();
 
-		$query = $this->db->getQueryBuilder();
-		$query->delete('talk_rooms')->execute();
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('talk_attendees')->executeStatement();
 
-		$query = $this->db->getQueryBuilder();
-		$query->delete('talk_participants')->execute();
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('talk_bridges')->executeStatement();
 
-		$query = $this->db->getQueryBuilder();
-		$query->delete('share')
-			->where($query->expr()->orX(
-				$query->expr()->eq('share_type', $query->createNamedParameter(IShare::TYPE_ROOM)),
-				$query->expr()->eq('share_type', $query->createNamedParameter(11 /*RoomShareProvider::SHARE_TYPE_USERROOM*/))
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('talk_commands')
+			->where($delete->expr()->neq('app', $delete->createNamedParameter('')))
+			->andWhere($delete->expr()->neq('command', $delete->createNamedParameter('help')))
+			->executeStatement();
+
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('talk_internalsignaling')->executeStatement();
+
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('talk_invitations')->executeStatement();
+
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('talk_rooms')->executeStatement();
+
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('talk_sessions')->executeStatement();
+
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('share')
+			->where($delete->expr()->orX(
+				$delete->expr()->eq('share_type', $delete->createNamedParameter(IShare::TYPE_ROOM)),
+				$delete->expr()->eq('share_type', $delete->createNamedParameter(11 /*RoomShareProvider::SHARE_TYPE_USERROOM*/))
 			))
-			->execute();
+			->executeStatement();
+
+		try {
+			$delete = $this->db->getQueryBuilder();
+			$delete->delete('notifications')
+				->where($delete->expr()->eq('app', $delete->createNamedParameter('spreed')))
+				->executeStatement();
+		} catch (\Throwable $e) {
+			// Ignore
+		}
 
 		return new DataResponse();
 	}

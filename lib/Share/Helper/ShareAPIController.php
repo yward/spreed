@@ -31,7 +31,7 @@ use OCA\Talk\Room;
 use OCP\AppFramework\OCS\OCSNotFoundException;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\IL10N;
-use OCP\IUserManager;
+use OCP\IURLGenerator;
 use OCP\Share\IShare;
 
 /**
@@ -41,30 +41,24 @@ use OCP\Share\IShare;
  * actions or checks specific to room shares.
  */
 class ShareAPIController {
-
-	/** @var string */
-	private $userId;
-	/** @var IUserManager */
-	private $userManager;
-	/** @var Manager */
-	private $manager;
-	/** @var ITimeFactory */
-	protected $timeFactory;
-	/** @var IL10N */
-	private $l;
+	private string $userId;
+	private Manager $manager;
+	protected ITimeFactory $timeFactory;
+	private IL10N $l;
+	private IURLGenerator $urlGenerator;
 
 	public function __construct(
 			string $UserId,
-			IUserManager $userManager,
 			Manager $manager,
 			ITimeFactory $timeFactory,
-			IL10N $l10n
+			IL10N $l10n,
+			IURLGenerator $urlGenerator
 	) {
 		$this->userId = $UserId;
-		$this->userManager = $userManager;
 		$this->manager = $manager;
 		$this->timeFactory = $timeFactory;
 		$this->l = $l10n;
+		$this->urlGenerator = $urlGenerator;
 	}
 
 	/**
@@ -79,21 +73,23 @@ class ShareAPIController {
 		$result = [];
 
 		try {
-			$room = $this->manager->getRoomByToken($share->getSharedWith());
+			$room = $this->manager->getRoomByToken($share->getSharedWith(), $this->userId);
 		} catch (RoomNotFoundException $e) {
 			return $result;
 		}
 
 		$result['share_with_displayname'] = $room->getDisplayName($this->userId);
 		try {
-			$room->getParticipant($this->userId);
+			$room->getParticipant($this->userId, false);
+			$result['share_with_link'] = $this->urlGenerator->linkToRouteAbsolute('spreed.Page.showCall', ['token' => $room->getToken()]);
 		} catch (ParticipantNotFoundException $e) {
 			// Removing the conversation token from the leaked data if not a participant.
 			// Adding some unique but reproducable part to the share_with here
 			// so the avatars for conversations are distinguishable
 			$result['share_with'] = 'private_conversation_' . substr(sha1($room->getName() . $room->getId()), 0, 6);
+			$result['share_with_link'] = '';
 		}
-		if ($room->getType() === Room::PUBLIC_CALL) {
+		if ($room->getType() === Room::TYPE_PUBLIC) {
 			$result['token'] = $share->getToken();
 		}
 
@@ -161,13 +157,13 @@ class ShareAPIController {
 	 */
 	public function canAccessShare(IShare $share, string $user): bool {
 		try {
-			$room = $this->manager->getRoomByToken($share->getSharedWith());
+			$room = $this->manager->getRoomByToken($share->getSharedWith(), $user);
 		} catch (RoomNotFoundException $e) {
 			return false;
 		}
 
 		try {
-			$room->getParticipant($user);
+			$room->getParticipant($user, false);
 		} catch (ParticipantNotFoundException $e) {
 			return false;
 		}

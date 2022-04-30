@@ -32,9 +32,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class Delete extends Base {
-
-	/** @var IConfig */
-	private $config;
+	private IConfig $config;
 
 	public function __construct(IConfig $config) {
 		parent::__construct();
@@ -56,7 +54,7 @@ class Delete extends Base {
 			);
 	}
 
-	protected function execute(InputInterface $input, OutputInterface $output): ?int {
+	protected function execute(InputInterface $input, OutputInterface $output): int {
 		$server = $input->getArgument('server');
 		$protocols = $input->getArgument('protocols');
 

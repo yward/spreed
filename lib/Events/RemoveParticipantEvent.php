@@ -23,22 +23,33 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Events;
 
+use OCA\Talk\Model\Session;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
 
 class RemoveParticipantEvent extends ParticipantEvent {
+	protected string $reason;
 
-	/** @var string */
-	protected $reason;
+	/** @var Session[] */
+	protected array $sessions;
 
 	public function __construct(Room $room,
 								Participant $participant,
-								string $reason) {
+								string $reason,
+								array $sessions = []) {
 		parent::__construct($room, $participant);
 		$this->reason = $reason;
+		$this->sessions = $sessions;
 	}
 
 	public function getReason(): string {
 		return $this->reason;
+	}
+
+	/**
+	 * @return Session[]
+	 */
+	public function getSessions(): array {
+		return $this->sessions;
 	}
 }

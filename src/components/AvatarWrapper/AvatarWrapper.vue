@@ -20,18 +20,21 @@
 -->
 
 <template>
-	<div
-		class="avatar-wrapper"
+	<div class="avatar-wrapper"
 		:class="{'offline': offline}">
 		<div v-if="iconClass"
 			class="icon"
 			:class="[`avatar-${sizeToString}px`, iconClass]" />
-		<Avatar v-else-if="id"
+		<Avatar v-else-if="!isGuest"
 			:user="id"
 			:display-name="name"
+			:menu-container="menuContainer"
 			menu-position="left"
 			:disable-tooltip="disableTooltip"
 			:disable-menu="disableMenu"
+			:show-user-status="showUserStatus"
+			:show-user-status-compact="showUserStatusCompact"
+			:preloaded-user-status="preloadedUserStatus"
 			:size="size" />
 		<div v-else
 			class="guest"
@@ -81,11 +84,24 @@ export default {
 			type: Boolean,
 			default: false,
 		},
+
+		showUserStatus: {
+			type: Boolean,
+			default: true,
+		},
+		showUserStatusCompact: {
+			type: Boolean,
+			default: true,
+		},
+		preloadedUserStatus: {
+			type: Object,
+			default: undefined,
+		},
 	},
 	computed: {
 		// Determines which icon is displayed
 		iconClass() {
-			if (!this.source || this.source === 'users') {
+			if (!this.source || this.source === 'users' || this.isGuest) {
 				return ''
 			}
 			if (this.source === 'emails') {
@@ -94,9 +110,15 @@ export default {
 			// source: groups, circles
 			return 'icon-contacts'
 		},
+		isGuest() {
+			return this.source === 'guests'
+		},
 		firstLetterOfGuestName() {
 			const customName = this.name !== t('spreed', 'Guest') ? this.name : '?'
 			return customName.charAt(0)
+		},
+		menuContainer() {
+			return this.$store.getters.getMainContainerSelector()
 		},
 		// Takes the the size prop and makes it a string for the classes
 		sizeToString() {
@@ -107,17 +129,21 @@ export default {
 </script>
 
 <style lang="scss" scoped>
+@import '../../assets/avatar';
 
 .avatar-wrapper {
-	$avatar-size: 32px;
+	$avatar-size: 44px;
 	height: $avatar-size;
 	width: $avatar-size;
-	@import '../../assets/avatar.scss';
 	@include avatar-mixin($avatar-size);
 }
 
-.offline {
-	opacity: .4;
+.offline .avatar-wrapper .avatardiv {
+	background: rgba(var(--color-main-background-rgb), .4) !important;
+
+	::v-deep > img {
+		opacity: .4 !important;
+	}
 }
 
 </style>

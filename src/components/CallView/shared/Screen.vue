@@ -22,6 +22,7 @@
 	<div :id="screenContainerId" class="screenContainer">
 		<video v-show="(localMediaModel && localMediaModel.attributes.localScreen) || (callParticipantModel && callParticipantModel.attributes.screen)"
 			ref="screen"
+			:disablePictureInPicture="!isBig ? 'true' : 'false'"
 			class="screen"
 			:class="screenClass" />
 		<VideoBottomBar v-if="isBig"
@@ -121,11 +122,11 @@ export default {
 
 	watch: {
 
-		'localMediaModel.attributes.localScreen': function(localScreen) {
+		'localMediaModel.attributes.localScreen'(localScreen) {
 			this._setScreen(localScreen)
 		},
 
-		'callParticipantModel.attributes.screen': function(screen) {
+		'callParticipantModel.attributes.screen'(screen) {
 			this._setScreen(screen)
 		},
 
@@ -149,7 +150,11 @@ export default {
 				return
 			}
 
+			// The audio is played using an audio element in the model to be
+			// able to hear it even if there is no view for it.
 			attachMediaStream(screen, this.$refs.screen)
+
+			this.$refs.screen.muted = true
 		},
 
 	},

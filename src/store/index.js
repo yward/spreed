@@ -3,7 +3,7 @@
  *
  * @author Marco Ambrosini <marcoambrosini@pm.me>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -22,42 +22,8 @@
 
 import Vue from 'vue'
 import Vuex, { Store } from 'vuex'
-import actorStore from './actorStore'
-import conversationsStore from './conversationsStore'
-import guestNameStore from './guestNameStore'
-import messagesStore from './messagesStore'
-import participantsStore from './participantsStore'
-import quoteReplyStore from './quoteReplyStore'
-import sidebarStore from './sidebarStore'
-import tokenStore from './tokenStore'
-import windowVisibilityStore from './windowVisibilityStore'
-import fileUploadStore from './fileUploadStore'
-import newGroupConversationStore from './newGroupConversationStore'
-import callViewStore from './callViewStore'
-import talkHashStore from './talkHashStore'
+import storeConfig from './storeConfig'
 
 Vue.use(Vuex)
 
-const mutations = {}
-
-export default new Store({
-	modules: {
-		actorStore,
-		conversationsStore,
-		guestNameStore,
-		messagesStore,
-		participantsStore,
-		quoteReplyStore,
-		sidebarStore,
-		tokenStore,
-		windowVisibilityStore,
-		fileUploadStore,
-		newGroupConversationStore,
-		callViewStore,
-		talkHashStore,
-	},
-
-	mutations,
-
-	strict: process.env.NODE_ENV !== 'production',
-})
+export default new Store(storeConfig)

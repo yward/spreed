@@ -30,9 +30,7 @@ use OCP\Migration\IOutput;
 use OCP\Migration\IRepairStep;
 
 class CreateHelpCommand implements IRepairStep {
-
-	/** @var CommandService */
-	protected $service;
+	protected CommandService $service;
 
 	public function __construct(CommandService $service) {
 		$this->service = $service;
@@ -44,13 +42,21 @@ class CreateHelpCommand implements IRepairStep {
 
 	public function run(IOutput $output): void {
 		try {
-			$this->service->find('', 'help');
+			$command = $this->service->find('', 'help');
+			$this->service->update(
+				$command->getId(),
+				'help',
+				'talk',
+				'help',
+				Command::RESPONSE_USER,
+				Command::ENABLED_ALL
+			);
 		} catch (DoesNotExistException $e) {
 			$this->service->create(
 				'',
 				'help',
 				'talk',
-				'',
+				'help',
 				Command::RESPONSE_USER,
 				Command::ENABLED_ALL
 			);

@@ -21,154 +21,238 @@
   -->
 
 <template>
-	<Modal @close="close">
-		<div id="modal-inner" :class="{ 'icon-loading': loading }">
+	<Modal size="small"
+		:container="container"
+		@close="close">
+		<div id="modal-inner" class="talk-modal" :class="{ 'icon-loading': loading }">
 			<div id="modal-content">
-				<h1>{{ t('spreed', 'Select a conversation to add to the project') }}</h1>
+				<h2>
+					{{ dialogTitle }}
+				</h2>
+				<p v-if="dialogSubtitle" class="subtitle">
+					{{ dialogSubtitle }}
+				</p>
+				<div class="search-form">
+					<div class="icon-search" />
+					<input v-model="searchText"
+						class="search-form__input"
+						type="text">
+				</div>
 				<div id="room-list">
-					<ul v-if="!loading">
+					<ul v-if="!loading && availableRooms.length > 0">
 						<li v-for="room in availableRooms"
 							:key="room.token"
 							:class="{selected: selectedRoom === room.token }"
 							@click="selectedRoom=room.token">
-							<Avatar v-if="room.type === types.ROOM_TYPE_ONE_TO_ONE" :user="room.name" />
-							<div v-else-if="room.type === types.ROOM_TYPE_PUBLIC" class="avatar icon icon-public icon-white" />
-							<div v-else class="avatar icon icon-contacts" />
+							<ConversationIcon :item="room"
+								:hide-call="true"
+								:hide-favorite="false"
+								:disable-menu="true" />
 							<span>{{ room.displayName }}</span>
 						</li>
 					</ul>
+					<div v-else-if="!loading">
+						{{ t('spreed', 'No conversations found') }}
+					</div>
 				</div>
 				<div id="modal-buttons">
-					<button v-if="!loading" class="primary" @click="select">
+					<Button v-if="!loading && availableRooms.length > 0"
+						type="primary"
+						:disabled="!selectedRoom"
+						@click="select">
 						{{ t('spreed', 'Select conversation') }}
-					</button>
+					</Button>
 				</div>
 			</div>
 		</div>
 	</Modal>
 </template>
-<style scoped>
-	#modal-inner {
-		width: 90vw;
-		max-width: 400px;
-		height: 50vh;
-		position: relative;
-	}
 
-	#modal-content {
-		position: absolute;
-		width: calc(100% - 40px);
-		height: calc(100% - 40px);
-		display: flex;
-		flex-direction: column;
-		padding: 20px;
-	}
-
-	#room-list {
-		overflow-y: auto;
-		flex: 0 1 auto;
-	}
-
-	li {
-		padding: 6px;
-		border: 1px solid transparent;
-		display: flex;
-	}
-
-	li:hover, li:focus {
-		background-color: var(--color-background-dark);
-	}
-
-	li.selected {
-		box-shadow: inset 4px 0 var(--color-primary-element);
-	}
-
-	.avatar.icon {
-		border-radius: 50%;
-		width: 32px;
-		height: 32px;
-		background-color: var(--color-background-darker);
-	}
-
-	li > span {
-		padding: 5px;
-	}
-
-	li > span,
-	.avatar {
-		vertical-align: middle;
-
-	}
-
-	#modal-buttons {
-		overflow: hidden;
-		height: 44px;
-		flex-shrink: 0;
-	}
-
-	#modal-buttons .primary {
-		float: right;
-	}
-
-</style>
 <script>
-import Avatar from '@nextcloud/vue/dist/Components/Avatar'
 import Modal from '@nextcloud/vue/dist/Components/Modal'
 import axios from '@nextcloud/axios'
 import { generateOcsUrl } from '@nextcloud/router'
+import { CONVERSATION } from '../constants'
+import ConversationIcon from '../components/ConversationIcon'
+import Button from '@nextcloud/vue/dist/Components/Button'
 
 export default {
 	name: 'RoomSelector',
 	components: {
+		ConversationIcon,
 		Modal,
-		Avatar,
+		Button,
+	},
+	props: {
+		container: {
+			type: String,
+			default: undefined,
+		},
+
+		dialogTitle: {
+			type: String,
+			default: t('spreed', 'Link to a conversation'),
+		},
+
+		dialogSubtitle: {
+			type: String,
+			default: '',
+		},
+		/**
+		 * Whether to only show conversations to which
+		 * the user can post messages.
+		 */
+		showPostableOnly: {
+			type: Boolean,
+			default: false,
+		},
 	},
 	data() {
 		return {
 			rooms: [],
 			selectedRoom: null,
+			currentRoom: null,
+			searchText: '',
 			loading: true,
-			// TODO: should be included once this is properly available
-			types: {
-				ROOM_TYPE_ONE_TO_ONE: 1,
-				ROOM_TYPE_GROUP: 2,
-				ROOM_TYPE_PUBLIC: 3,
-				ROOM_TYPE_CHANGELOG: 4,
-			},
 		}
 	},
 	computed: {
-		currentRoom() {
-			if (OCA.SpreedMe && OCA.SpreedMe.app.activeRoom) {
-				return OCA.SpreedMe.app.activeRoom.get('token')
-			}
-			return null
-		},
 		availableRooms() {
-			return this.rooms.filter((room) => {
-				return room.token !== this.currentRoom
-					&& room.type !== this.types.ROOM_TYPE_CHANGELOG
+			const roomsTemp = this.rooms.filter((room) => {
+				return room.type !== CONVERSATION.TYPE.CHANGELOG
+					&& (!this.currentRoom || this.currentRoom !== room.token)
+					&& (!this.showPostableOnly || room.readOnly === CONVERSATION.STATE.READ_WRITE)
 					&& room.objectType !== 'file'
 					&& room.objectType !== 'share:password'
 			})
+			if (!this.searchText) {
+				return roomsTemp
+			} else {
+				return roomsTemp.filter(room => room.displayName.toLowerCase().includes(this.searchText.toLowerCase()))
+			}
 		},
 	},
 	beforeMount() {
 		this.fetchRooms()
+		const $store = OCA.Talk?.instance?.$store
+		if ($store) {
+			this.currentRoom = $store.getters.getToken()
+		}
 	},
 	methods: {
 		fetchRooms() {
-			axios.get(generateOcsUrl('/apps/spreed/api/v1', 2) + 'room').then((response) => {
-				this.rooms = response.data.ocs.data
+			axios.get(generateOcsUrl('/apps/spreed/api/v4/room')).then((response) => {
+				this.rooms = response.data.ocs.data.sort(this.sortConversations)
 				this.loading = false
 			})
 		},
+		sortConversations(conversation1, conversation2) {
+			if (conversation1.isFavorite !== conversation2.isFavorite) {
+				return conversation1.isFavorite ? -1 : 1
+			}
+
+			return conversation2.lastActivity - conversation1.lastActivity
+		},
 		close() {
+			// FIXME: should not emit on $root but on itself
 			this.$root.$emit('close')
+			this.$emit('close')
 		},
 		select() {
 			this.$root.$emit('select', this.selectedRoom)
+			this.$emit('select', this.selectedRoom)
 		},
 	},
 }
 </script>
+
+<style lang="scss" scoped>
+
+.talk-modal {
+	height: 80vh;
+}
+
+#modal-inner {
+	width: 100%;
+	padding: 16px;
+	margin: 0 auto;
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	h2 {
+		margin-bottom: 4px;
+	}
+}
+
+#modal-content {
+	position: absolute;
+	width: calc(100% - 40px);
+	height: calc(100% - 40px);
+	display: flex;
+	flex-direction: column;
+}
+
+#room-list {
+	overflow-y: auto;
+	flex: 0 1 auto;
+	height: 100%;
+}
+
+li {
+	padding: 6px;
+	border: 1px solid transparent;
+	display: flex;
+
+	&:hover,
+	&:focus {
+		background-color: var(--color-background-dark);
+		border-radius: var(--border-radius-pill);
+	}
+
+	&.selected {
+		background-color: var(--color-primary-light);
+		border-radius: var(--border-radius-pill);
+	}
+
+	& > span {
+		padding: 5px 5px 5px 10px;
+		vertical-align: middle;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		overflow: hidden;
+	}
+}
+
+#modal-buttons {
+	overflow: hidden;
+	flex-shrink: 0;
+	margin-left: auto;
+}
+
+.subtitle {
+	color: var(--color-text-maxcontrast);
+	margin-bottom: 8px;
+}
+
+.search-form {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	margin-bottom: 10px;
+	&__input {
+		width: 100%;
+		font-size: 16px;
+		padding-left: 28px;
+		line-height: 34px;
+		box-shadow: 0 10px 5px var(--color-main-background);
+		z-index: 1;
+	}
+	.icon-search {
+		position: absolute;
+		top: 12px;
+		left: 8px;
+		z-index: 2;
+	}
+}
+</style>

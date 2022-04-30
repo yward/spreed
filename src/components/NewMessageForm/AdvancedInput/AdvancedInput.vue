@@ -22,14 +22,16 @@
 <template>
 	<At ref="at"
 		v-model="text"
+		class="atwho-wrapper"
 		name-key="label"
 		:members="autoCompleteMentionCandidates"
 		:filter-match="atFilter"
 		:tab-select="true"
 		:allow-spaces="false"
 		@at="handleAtEvent">
-		<template v-slot:item="scope">
+		<template #item="scope">
 			<Avatar v-if="isMentionToAll(scope.item.id)"
+				:size="44"
 				:icon-class="'icon-group-forced-white'"
 				:disable-tooltip="true"
 				:disable-menu="true"
@@ -40,14 +42,24 @@
 				{{ getFirstLetterOfGuestName(scope.item.label) }}
 			</div>
 			<Avatar v-else
+				:key="scope.item.source + '#' + scope.item.id"
+				:size="44"
 				:user="atRemoveQuotesFromUserIdForAvatars(scope.item.id)"
+				:show-user-status-compact="false"
 				:display-name="scope.item.label"
 				:disable-tooltip="true"
 				:disable-menu="true" />
 			&nbsp;
-			<span>{{ scope.item.label }}</span>
+
+			<span class="mention-suggestion">
+				<span>{{ scope.item.label }}</span>
+				<em v-if="getStatusMessage(scope.item)"
+					class="user-status">
+					{{ getStatusMessage(scope.item) }}
+				</em>
+			</span>
 		</template>
-		<template v-slot:embeddedItem="scope">
+		<template #embeddedItem="scope">
 			<!-- The root element itself is ignored, only its contents are taken
 			     into account. -->
 			<span>
@@ -55,8 +67,7 @@
 				     strange times in which no item is selected and thus there
 				     is no data, so do not use the Mention component in those
 				     cases. -->
-				<Mention
-					v-if="scope.current.id"
+				<Mention v-if="scope.current.id"
 					:id="scope.current.id"
 					:type="getTypeForMentionComponent(scope.current)"
 					:name="scope.current.label"
@@ -64,18 +75,25 @@
 			</span>
 		</template>
 		<div ref="contentEditable"
+			v-shortkey.once="['c']"
 			:contenteditable="activeInput"
 			:placeHolder="placeholderText"
 			role="textbox"
+			:aria-label="ariaLabel"
 			aria-multiline="true"
 			class="new-message-form__advancedinput"
-			@keydown.enter="handleKeydown"
+			@shortkey="focusInput"
+			@keydown.enter="handleKeydownEnter"
+			@keydown.esc.prevent="handleKeydownEsc"
+			@focus="onFocus"
+			@blur="onBlur"
 			@paste="onPaste" />
 	</At>
 </template>
 
 <script>
 import At from 'vue-at'
+import UserStatus from '../../../mixins/userStatus'
 import VueAtReparenter from '../../../mixins/vueAtReparenter'
 import { EventBus } from '../../../services/EventBus'
 import { searchPossibleMentions } from '../../../services/mentionsService'
@@ -90,7 +108,7 @@ import debounce from 'debounce'
  * vue-at component or not.
  *
  * @param {CSSStyleSheet} sheet the style sheet to check.
- * @returns {Boolean} True if it is the style sheet from vue-at, false
+ * @return {boolean} True if it is the style sheet from vue-at, false
  *          otherwise.
  */
 function isDefaultAtWhoStyleSheet(sheet) {
@@ -153,6 +171,7 @@ export default {
 	},
 	mixins: [
 		VueAtReparenter,
+		UserStatus,
 	],
 	props: {
 		/**
@@ -160,7 +179,12 @@ export default {
 		 */
 		placeholderText: {
 			type: String,
-			default: t('spreed', 'Write message, @ to mention someone …'),
+			default: '',
+		},
+
+		ariaLabel: {
+			type: String,
+			default: '',
 		},
 
 		/**
@@ -184,10 +208,11 @@ export default {
 			required: true,
 		},
 	},
-	data: function() {
+	data() {
 		return {
 			text: '',
 			autoCompleteMentionCandidates: [],
+			blurTimer: null,
 		}
 	},
 	watch: {
@@ -212,21 +237,37 @@ export default {
 			}
 		},
 	},
+
 	mounted() {
-		this.focusInput()
 		/**
 		 * Listen to routeChange global events and focus on the
 		 */
-		EventBus.$on('routeChange', this.focusInput)
-		EventBus.$on('focusChatInput', this.focusInput)
+		EventBus.$on('focus-chat-input', this.focusInput)
 
 		this.atWhoPanelExtraClasses = 'talk candidate-mentions'
 	},
+
 	beforeDestroy() {
-		EventBus.$off('routeChange', this.focusInput)
-		EventBus.$off('focusChatInput', this.focusInput)
+		EventBus.$off('focus-chat-input', this.focusInput)
 	},
+
 	methods: {
+		onBlur() {
+			// requires a short delay to avoid blocking click event handlers
+			// from vue-at which also have some delay in place...
+			// a setTimeout was recommended by the library author here:
+			// https://github.com/fritx/vue-at/issues/114#issuecomment-565777450
+			this.blurTimer = setTimeout(() => {
+				if (this.$refs.at) {
+					this.$refs.at.closePanel()
+				}
+			}, 200)
+		},
+
+		onFocus() {
+			clearTimeout(this.blurTimer)
+		},
+
 		onPaste(e) {
 			e.preventDefault()
 
@@ -238,6 +279,8 @@ export default {
 				const text = content.text
 				const div = document.createElement('div').innerText = escapeHtml(text)
 				document.execCommand('insertHtml', false, div)
+
+				this.focusInput()
 			}
 		},
 
@@ -245,7 +288,8 @@ export default {
 		 * The vue-at library only searches in the display name by default.
 		 * But luckily our server responds already only with matching items,
 		 * so we just filter none and show them all.
-		 * @returns {boolean} True as we never filter anything out
+		 *
+		 * @return {boolean} True as we never filter anything out
 		 */
 		atFilter() {
 			return true
@@ -278,10 +322,16 @@ export default {
 		 *
 		 * @param {object} event the event object;
 		 */
-		handleKeydown(event) {
+		handleKeydownEnter(event) {
 			// Prevent submit event when vue-at panel is open, as that should
 			// just select the mention from the panel.
 			if (this.atwho) {
+				return
+			}
+
+			// If the user is stil composing by an input method,
+			// we should not submit the message
+			if (event.isComposing) {
 				return
 			}
 
@@ -293,10 +343,19 @@ export default {
 		},
 
 		/**
+		 * Loose focus of the chat so shortcuts can be used
+		 *
+		 * @param {object} event the event object;
+		 */
+		handleKeydownEsc(event) {
+			document.activeElement.blur()
+		},
+
+		/**
 		 * Sets the autocomplete mention candidates based on the matched text
 		 * after the "@".
 		 *
-		 * @param {String} chunk the matched text to look candidate mentions for.
+		 * @param {string} chunk the matched text to look candidate mentions for.
 		 */
 		handleAtEvent: debounce(function(chunk) {
 			this.queryPossibleMentions(chunk)
@@ -328,9 +387,9 @@ export default {
 
 		getGuestAvatarStyle() {
 			return {
-				'width': '32px',
-				'height': '32px',
-				'line-height': '32px',
+				width: '44px',
+				height: '44px',
+				'line-height': '44px',
 				'background-color': '#b9b9b9',
 				'text-align': 'center',
 			}
@@ -357,20 +416,34 @@ export default {
 <style lang="scss" scoped>
 @import '../../../assets/variables';
 
+.atwho-wrapper {
+	display: flex;
+}
+
 .new-message-form__advancedinput {
 	overflow: visible;
 	width: 100%;
 	border:none;
-	margin: 0;
-	margin-left: 6px !important;
+	margin: 0 4px !important;
 	word-break: break-word;
 	white-space: pre-wrap;
+	padding: 8px 16px 8px 48px;
 }
 
 // Support for the placeholder text in the div contenteditable
 div[contenteditable] {
 	font-size: $chat-font-size;
 	line-height: $chat-line-height;
+	min-height: $clickable-area;
+	border-radius: calc($clickable-area / 2);
+	border: 1px solid var(--color-border-dark);
+	max-height: 180px;
+	overflow-y: auto;
+	&:hover,
+	&:focus,
+	&:active {
+		border: 1px solid var(--color-primary-element) !important;
+	}
 }
 
 // Support for the placeholder text in the div contenteditable
@@ -379,4 +452,17 @@ div[contenteditable] {
 	display: block;
 	color: var(--color-text-maxcontrast);
 }
+
+.mention-suggestion {
+	max-width: 250px;
+	padding-left: 8px;
+
+	.user-status {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		display: block;
+		margin-top: 2px;
+	}
+}
+
 </style>

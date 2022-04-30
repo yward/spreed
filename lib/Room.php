@@ -27,39 +27,68 @@ declare(strict_types=1);
 
 namespace OCA\Talk;
 
-use OCA\Talk\Events\AddParticipantsEvent;
-use OCA\Talk\Events\JoinRoomGuestEvent;
-use OCA\Talk\Events\JoinRoomUserEvent;
 use OCA\Talk\Events\ModifyLobbyEvent;
-use OCA\Talk\Events\ModifyParticipantEvent;
 use OCA\Talk\Events\ModifyRoomEvent;
-use OCA\Talk\Events\ParticipantEvent;
-use OCA\Talk\Events\RemoveParticipantEvent;
-use OCA\Talk\Events\RemoveUserEvent;
 use OCA\Talk\Events\RoomEvent;
 use OCA\Talk\Events\SignalingRoomPropertiesEvent;
 use OCA\Talk\Events\VerifyRoomPasswordEvent;
-use OCA\Talk\Exceptions\InvalidPasswordException;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
-use OCA\Talk\Exceptions\UnauthorizedException;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Model\SelectHelper;
+use OCA\Talk\Model\Session;
+use OCA\Talk\Service\ParticipantService;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\Comments\IComment;
 use OCP\DB\QueryBuilder\IQueryBuilder;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\IDBConnection;
-use OCP\IUser;
+use OCP\Log\Audit\CriticalActionPerformedEvent;
 use OCP\Security\IHasher;
-use OCP\Security\ISecureRandom;
 
 class Room {
-	public const UNKNOWN_CALL = -1;
-	public const ONE_TO_ONE_CALL = 1;
-	public const GROUP_CALL = 2;
-	public const PUBLIC_CALL = 3;
-	public const CHANGELOG_CONVERSATION = 4;
+
+	/**
+	 * Regex that matches SIP incompatible rooms:
+	 * 1. duplicate digit: …11…
+	 * 2. leading zero: 0…
+	 * 3. non-digit: …a…
+	 */
+	public const SIP_INCOMPATIBLE_REGEX = '/((\d)(?=\2+)|^0|\D)/';
+
+	public const TYPE_UNKNOWN = -1;
+	public const TYPE_ONE_TO_ONE = 1;
+	public const TYPE_GROUP = 2;
+	public const TYPE_PUBLIC = 3;
+	public const TYPE_CHANGELOG = 4;
+
+	/** @deprecated Use self::TYPE_UNKNOWN */
+	public const UNKNOWN_CALL = self::TYPE_UNKNOWN;
+	/** @deprecated Use self::TYPE_ONE_TO_ONE */
+	public const ONE_TO_ONE_CALL = self::TYPE_ONE_TO_ONE;
+	/** @deprecated Use self::TYPE_GROUP */
+	public const GROUP_CALL = self::TYPE_GROUP;
+	/** @deprecated Use self::TYPE_PUBLIC */
+	public const PUBLIC_CALL = self::TYPE_PUBLIC;
+	/** @deprecated Use self::TYPE_CHANGELOG */
+	public const CHANGELOG_CONVERSATION = self::TYPE_CHANGELOG;
 
 	public const READ_WRITE = 0;
 	public const READ_ONLY = 1;
+
+	/**
+	 * Only visible when joined
+	 */
+	public const LISTABLE_NONE = 0;
+
+	/**
+	 * Searchable by all regular users and moderators, even when not joined, excluding users from the guest app
+	 */
+	public const LISTABLE_USERS = 1;
+
+	/**
+	 * Searchable by everyone, which includes guest users (from guest app), even when not joined
+	 */
+	public const LISTABLE_ALL = 2;
 
 	public const START_CALL_EVERYONE = 0;
 	public const START_CALL_USERS = 1;
@@ -73,18 +102,30 @@ class Room {
 	public const EVENT_AFTER_ROOM_DELETE = self::class . '::postDeleteRoom';
 	public const EVENT_BEFORE_NAME_SET = self::class . '::preSetName';
 	public const EVENT_AFTER_NAME_SET = self::class . '::postSetName';
+	public const EVENT_BEFORE_DESCRIPTION_SET = self::class . '::preSetDescription';
+	public const EVENT_AFTER_DESCRIPTION_SET = self::class . '::postSetDescription';
 	public const EVENT_BEFORE_PASSWORD_SET = self::class . '::preSetPassword';
 	public const EVENT_AFTER_PASSWORD_SET = self::class . '::postSetPassword';
 	public const EVENT_BEFORE_TYPE_SET = self::class . '::preSetType';
 	public const EVENT_AFTER_TYPE_SET = self::class . '::postSetType';
 	public const EVENT_BEFORE_READONLY_SET = self::class . '::preSetReadOnly';
 	public const EVENT_AFTER_READONLY_SET = self::class . '::postSetReadOnly';
+	public const EVENT_BEFORE_LISTABLE_SET = self::class . '::preSetListable';
+	public const EVENT_AFTER_LISTABLE_SET = self::class . '::postSetListable';
 	public const EVENT_BEFORE_LOBBY_STATE_SET = self::class . '::preSetLobbyState';
 	public const EVENT_AFTER_LOBBY_STATE_SET = self::class . '::postSetLobbyState';
+	public const EVENT_BEFORE_END_CALL_FOR_EVERYONE = self::class . '::preEndCallForEveryone';
+	public const EVENT_AFTER_END_CALL_FOR_EVERYONE = self::class . '::postEndCallForEveryone';
+	public const EVENT_BEFORE_SIP_ENABLED_SET = self::class . '::preSetSIPEnabled';
+	public const EVENT_AFTER_SIP_ENABLED_SET = self::class . '::postSetSIPEnabled';
+	public const EVENT_BEFORE_PERMISSIONS_SET = self::class . '::preSetPermissions';
+	public const EVENT_AFTER_PERMISSIONS_SET = self::class . '::postSetPermissions';
 	public const EVENT_BEFORE_USERS_ADD = self::class . '::preAddUsers';
 	public const EVENT_AFTER_USERS_ADD = self::class . '::postAddUsers';
 	public const EVENT_BEFORE_PARTICIPANT_TYPE_SET = self::class . '::preSetParticipantType';
 	public const EVENT_AFTER_PARTICIPANT_TYPE_SET = self::class . '::postSetParticipantType';
+	public const EVENT_BEFORE_PARTICIPANT_PERMISSIONS_SET = self::class . '::preSetParticipantPermissions';
+	public const EVENT_AFTER_PARTICIPANT_PERMISSIONS_SET = self::class . '::postSetParticipantPermissions';
 	public const EVENT_BEFORE_USER_REMOVE = self::class . '::preRemoveUser';
 	public const EVENT_AFTER_USER_REMOVE = self::class . '::postRemoveUser';
 	public const EVENT_BEFORE_PARTICIPANT_REMOVE = self::class . '::preRemoveBySession';
@@ -100,98 +141,99 @@ class Room {
 	public const EVENT_AFTER_GUESTS_CLEAN = self::class . '::postCleanGuests';
 	public const EVENT_BEFORE_SESSION_JOIN_CALL = self::class . '::preSessionJoinCall';
 	public const EVENT_AFTER_SESSION_JOIN_CALL = self::class . '::postSessionJoinCall';
+	public const EVENT_BEFORE_SESSION_UPDATE_CALL_FLAGS = self::class . '::preSessionUpdateCallFlags';
+	public const EVENT_AFTER_SESSION_UPDATE_CALL_FLAGS = self::class . '::postSessionUpdateCallFlags';
 	public const EVENT_BEFORE_SESSION_LEAVE_CALL = self::class . '::preSessionLeaveCall';
 	public const EVENT_AFTER_SESSION_LEAVE_CALL = self::class . '::postSessionLeaveCall';
 	public const EVENT_BEFORE_SIGNALING_PROPERTIES = self::class . '::beforeSignalingProperties';
 
-	/** @var Manager */
-	private $manager;
-	/** @var IDBConnection */
-	private $db;
-	/** @var ISecureRandom */
-	private $secureRandom;
-	/** @var IEventDispatcher */
-	private $dispatcher;
-	/** @var ITimeFactory */
-	private $timeFactory;
-	/** @var IHasher */
-	private $hasher;
+	public const DESCRIPTION_MAXIMUM_LENGTH = 500;
 
-	/** @var int */
-	private $id;
-	/** @var int */
-	private $type;
-	/** @var int */
-	private $readOnly;
-	/** @var int */
-	private $lobbyState;
-	/** @var int|null */
-	private $assignedSignalingServer;
-	/** @var \DateTime|null */
-	private $lobbyTimer;
-	/** @var string */
-	private $token;
-	/** @var string */
-	private $name;
-	/** @var string */
-	private $password;
-	/** @var int */
-	private $activeGuests;
-	/** @var \DateTime|null */
-	private $activeSince;
-	/** @var \DateTime|null */
-	private $lastActivity;
-	/** @var int */
-	private $lastMessageId;
-	/** @var IComment|null */
-	private $lastMessage;
-	/** @var string */
-	private $objectType;
-	/** @var string */
-	private $objectId;
+	private Manager $manager;
+	private IDBConnection $db;
+	private IEventDispatcher $dispatcher;
+	private ITimeFactory $timeFactory;
+	private IHasher $hasher;
 
-	/** @var string */
-	protected $currentUser;
-	/** @var Participant */
-	protected $participant;
+	private int $id;
+	private int $type;
+	private int $readOnly;
+	private int $listable;
+	private int $lobbyState;
+	private int $sipEnabled;
+	private ?int $assignedSignalingServer;
+	private ?\DateTime $lobbyTimer;
+	private string $token;
+	private string $name;
+	private string $description;
+	private string $password;
+	private string $remoteServer;
+	private string $remoteToken;
+	private int $activeGuests;
+	private int $defaultPermissions;
+	private int $callPermissions;
+	private int $callFlag;
+	private ?\DateTime $activeSince;
+	private ?\DateTime $lastActivity;
+	private int $lastMessageId;
+	private ?IComment $lastMessage;
+	private string $objectType;
+	private string $objectId;
+
+	protected ?string $currentUser = null;
+	protected ?Participant $participant = null;
 
 	public function __construct(Manager $manager,
 								IDBConnection $db,
-								ISecureRandom $secureRandom,
 								IEventDispatcher $dispatcher,
 								ITimeFactory $timeFactory,
 								IHasher $hasher,
 								int $id,
 								int $type,
 								int $readOnly,
+								int $listable,
 								int $lobbyState,
+								int $sipEnabled,
 								?int $assignedSignalingServer,
 								string $token,
 								string $name,
+								string $description,
 								string $password,
+								string $remoteServer,
+								string $remoteToken,
 								int $activeGuests,
-								\DateTime $activeSince = null,
-								\DateTime $lastActivity = null,
+								int $defaultPermissions,
+								int $callPermissions,
+								int $callFlag,
+								?\DateTime $activeSince,
+								?\DateTime $lastActivity,
 								int $lastMessageId,
-								IComment $lastMessage = null,
-								\DateTime $lobbyTimer = null,
-								string $objectType = '',
-								string $objectId = '') {
+								?IComment $lastMessage,
+								?\DateTime $lobbyTimer,
+								string $objectType,
+								string $objectId) {
 		$this->manager = $manager;
 		$this->db = $db;
-		$this->secureRandom = $secureRandom;
 		$this->dispatcher = $dispatcher;
 		$this->timeFactory = $timeFactory;
 		$this->hasher = $hasher;
 		$this->id = $id;
 		$this->type = $type;
 		$this->readOnly = $readOnly;
+		$this->listable = $listable;
 		$this->lobbyState = $lobbyState;
+		$this->sipEnabled = $sipEnabled;
 		$this->assignedSignalingServer = $assignedSignalingServer;
 		$this->token = $token;
 		$this->name = $name;
+		$this->description = $description;
 		$this->password = $password;
+		$this->remoteServer = $remoteServer;
+		$this->remoteToken = $remoteToken;
 		$this->activeGuests = $activeGuests;
+		$this->defaultPermissions = $defaultPermissions;
+		$this->callPermissions = $callPermissions;
+		$this->callFlag = $callFlag;
 		$this->activeSince = $activeSince;
 		$this->lastActivity = $lastActivity;
 		$this->lastMessageId = $lastMessageId;
@@ -213,9 +255,17 @@ class Room {
 		return $this->readOnly;
 	}
 
+	public function getListable(): int {
+		return $this->listable;
+	}
+
 	public function getLobbyState(): int {
 		$this->validateTimer();
 		return $this->lobbyState;
+	}
+
+	public function getSIPEnabled(): int {
+		return $this->sipEnabled;
 	}
 
 	public function getLobbyTimer(): ?\DateTime {
@@ -238,6 +288,26 @@ class Room {
 	}
 
 	public function getName(): string {
+		if ($this->type === self::TYPE_ONE_TO_ONE) {
+			if ($this->name === '') {
+				// TODO use DI
+				$participantService = \OC::$server->get(ParticipantService::class);
+				// Fill the room name with the participants for 1-to-1 conversations
+				$users = $participantService->getParticipantUserIds($this);
+				sort($users);
+				$this->setName(json_encode($users), '');
+			} elseif (strpos($this->name, '["') !== 0) {
+				// TODO use DI
+				$participantService = \OC::$server->get(ParticipantService::class);
+				// Not the json array, but the old fallback when someone left
+				$users = $participantService->getParticipantUserIds($this);
+				if (count($users) !== 2) {
+					$users[] = $this->name;
+				}
+				sort($users);
+				$this->setName(json_encode($users), '');
+			}
+		}
 		return $this->name;
 	}
 
@@ -245,8 +315,28 @@ class Room {
 		return $this->manager->resolveRoomDisplayName($this, $userId);
 	}
 
+	public function getDescription(): string {
+		return $this->description;
+	}
+
+	/**
+	 * @deprecated Use ParticipantService::getGuestCount() instead
+	 * @return int
+	 */
 	public function getActiveGuests(): int {
 		return $this->activeGuests;
+	}
+
+	public function getDefaultPermissions(): int {
+		return $this->defaultPermissions;
+	}
+
+	public function getCallPermissions(): int {
+		return $this->callPermissions;
+	}
+
+	public function getCallFlag(): int {
+		return $this->callFlag;
 	}
 
 	public function getActiveSince(): ?\DateTime {
@@ -284,6 +374,18 @@ class Room {
 		return $this->password;
 	}
 
+	public function getRemoteServer(): string {
+		return $this->remoteServer;
+	}
+
+	public function getRemoteToken(): string {
+		return $this->remoteToken;
+	}
+
+	public function isFederatedRemoteRoom(): bool {
+		return $this->remoteServer !== '';
+	}
+
 	public function setParticipant(?string $userId, Participant $participant): void {
 		$this->currentUser = $userId;
 		$this->participant = $participant;
@@ -293,17 +395,26 @@ class Room {
 	 * Return the room properties to send to the signaling server.
 	 *
 	 * @param string $userId
+	 * @param bool $roomModified
 	 * @return array
 	 */
-	public function getPropertiesForSignaling(string $userId): array {
+	public function getPropertiesForSignaling(string $userId, bool $roomModified = true): array {
 		$properties = [
 			'name' => $this->getDisplayName($userId),
 			'type' => $this->getType(),
 			'lobby-state' => $this->getLobbyState(),
 			'lobby-timer' => $this->getLobbyTimer(),
 			'read-only' => $this->getReadOnly(),
+			'listable' => $this->getListable(),
 			'active-since' => $this->getActiveSince(),
+			'sip-enabled' => $this->getSIPEnabled(),
 		];
+
+		if ($roomModified) {
+			$properties['description'] = $this->getDescription();
+		} else {
+			$properties['participant-list'] = 'refresh';
+		}
 
 		$event = new SignalingRoomPropertiesEvent($this, $userId, $properties);
 		$this->dispatcher->dispatch(self::EVENT_BEFORE_SIGNALING_PROPERTIES, $event);
@@ -312,24 +423,48 @@ class Room {
 
 	/**
 	 * @param string|null $userId
+	 * @param string|null|false $sessionId Set to false if you don't want to load a session (and save resources),
+	 *                                     string to try loading a specific session
+	 *                                     null to try loading "any"
 	 * @return Participant
 	 * @throws ParticipantNotFoundException When the user is not a participant
 	 */
-	public function getParticipant(?string $userId): Participant {
+	public function getParticipant(?string $userId, $sessionId = null): Participant {
 		if (!is_string($userId) || $userId === '') {
 			throw new ParticipantNotFoundException('Not a user');
 		}
 
 		if ($this->currentUser === $userId && $this->participant instanceof Participant) {
-			return $this->participant;
+			if (!$sessionId
+				|| ($this->participant->getSession() instanceof Session
+					&& $this->participant->getSession()->getSessionId() === $sessionId)) {
+				return $this->participant;
+			}
 		}
 
 		$query = $this->db->getQueryBuilder();
-		$query->select('*')
-			->from('talk_participants')
-			->where($query->expr()->eq('user_id', $query->createNamedParameter($userId)))
-			->andWhere($query->expr()->eq('room_id', $query->createNamedParameter($this->getId())));
-		$result = $query->execute();
+		$helper = new SelectHelper();
+		$helper->selectAttendeesTable($query);
+		$query->from('talk_attendees', 'a')
+			->where($query->expr()->eq('a.actor_type', $query->createNamedParameter(Attendee::ACTOR_USERS)))
+			->andWhere($query->expr()->eq('a.actor_id', $query->createNamedParameter($userId)))
+			->andWhere($query->expr()->eq('a.room_id', $query->createNamedParameter($this->getId())))
+			->setMaxResults(1);
+
+		if ($sessionId !== false) {
+			if ($sessionId !== null) {
+				$helper->selectSessionsTable($query);
+				$query->leftJoin('a', 'talk_sessions', 's', $query->expr()->andX(
+					$query->expr()->eq('s.session_id', $query->createNamedParameter($sessionId)),
+					$query->expr()->eq('a.id', 's.attendee_id')
+				));
+			} else {
+				$helper->selectSessionsTable($query); // FIXME PROBLEM
+				$query->leftJoin('a', 'talk_sessions', 's', $query->expr()->eq('a.id', 's.attendee_id'));
+			}
+		}
+
+		$result = $query->executeQuery();
 		$row = $result->fetch();
 		$result->closeCursor();
 
@@ -356,11 +491,95 @@ class Room {
 		}
 
 		$query = $this->db->getQueryBuilder();
-		$query->select('*')
-			->from('talk_participants')
-			->where($query->expr()->eq('session_id', $query->createNamedParameter($sessionId)))
-			->andWhere($query->expr()->eq('room_id', $query->createNamedParameter($this->getId())));
-		$result = $query->execute();
+		$helper = new SelectHelper();
+		$helper->selectAttendeesTable($query);
+		$helper->selectSessionsTable($query);
+		$query->from('talk_sessions', 's')
+			->leftJoin('s', 'talk_attendees', 'a', $query->expr()->eq('a.id', 's.attendee_id'))
+			->where($query->expr()->eq('s.session_id', $query->createNamedParameter($sessionId)))
+			->andWhere($query->expr()->eq('a.room_id', $query->createNamedParameter($this->getId())))
+			->setMaxResults(1);
+		$result = $query->executeQuery();
+		$row = $result->fetch();
+		$result->closeCursor();
+
+		if ($row === false) {
+			throw new ParticipantNotFoundException('User is not a participant');
+		}
+
+		return $this->manager->createParticipantObject($this, $row);
+	}
+
+	/**
+	 * @param string $pin
+	 * @return Participant
+	 * @throws ParticipantNotFoundException When the pin is not valid (has no participant assigned)
+	 */
+	public function getParticipantByPin(string $pin): Participant {
+		$query = $this->db->getQueryBuilder();
+		$helper = new SelectHelper();
+		$helper->selectAttendeesTable($query);
+		$query->from('talk_attendees', 'a')
+			->where($query->expr()->eq('a.pin', $query->createNamedParameter($pin)))
+			->andWhere($query->expr()->eq('a.room_id', $query->createNamedParameter($this->getId())))
+			->setMaxResults(1);
+		$result = $query->executeQuery();
+		$row = $result->fetch();
+		$result->closeCursor();
+
+		if ($row === false) {
+			throw new ParticipantNotFoundException('User is not a participant');
+		}
+
+		return $this->manager->createParticipantObject($this, $row);
+	}
+
+	/**
+	 * @param int $attendeeId
+	 * @return Participant
+	 * @throws ParticipantNotFoundException When the pin is not valid (has no participant assigned)
+	 */
+	public function getParticipantByAttendeeId(int $attendeeId): Participant {
+		$query = $this->db->getQueryBuilder();
+		$helper = new SelectHelper();
+		$helper->selectAttendeesTable($query);
+		$query->from('talk_attendees', 'a')
+			->where($query->expr()->eq('a.id', $query->createNamedParameter($attendeeId, IQueryBuilder::PARAM_INT)))
+			->andWhere($query->expr()->eq('a.room_id', $query->createNamedParameter($this->getId())))
+			->setMaxResults(1);
+
+		$result = $query->executeQuery();
+		$row = $result->fetch();
+		$result->closeCursor();
+
+		if ($row === false) {
+			throw new ParticipantNotFoundException('User is not a participant');
+		}
+
+		return $this->manager->createParticipantObject($this, $row);
+	}
+
+	/**
+	 * @param string $actorType
+	 * @param string $actorId
+	 * @return Participant
+	 * @throws ParticipantNotFoundException When the pin is not valid (has no participant assigned)
+	 */
+	public function getParticipantByActor(string $actorType, string $actorId): Participant {
+		if ($actorType === Attendee::ACTOR_USERS) {
+			return $this->getParticipant($actorId, false);
+		}
+
+		$query = $this->db->getQueryBuilder();
+		$helper = new SelectHelper();
+		$helper->selectAttendeesTable($query);
+		$query->from('talk_attendees', 'a')
+			->andWhere($query->expr()->eq('a.actor_type', $query->createNamedParameter($actorType)))
+			->andWhere($query->expr()->eq('a.actor_id', $query->createNamedParameter($actorId)))
+			->andWhere($query->expr()->eq('a.room_id', $query->createNamedParameter($this->getId())))
+			->setMaxResults(1);
+
+		$result = $query->executeQuery();
 		$row = $result->fetch();
 		$result->closeCursor();
 
@@ -374,27 +593,34 @@ class Room {
 	public function deleteRoom(): void {
 		$event = new RoomEvent($this);
 		$this->dispatcher->dispatch(self::EVENT_BEFORE_ROOM_DELETE, $event);
-		$query = $this->db->getQueryBuilder();
+		$delete = $this->db->getQueryBuilder();
 
-		// Delete all participants
-		$query->delete('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-		$query->execute();
+		// Delete attendees
+		$delete->delete('talk_attendees')
+			->where($delete->expr()->eq('room_id', $delete->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$delete->executeStatement();
 
 		// Delete room
-		$query->delete('talk_rooms')
-			->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-		$query->execute();
+		$delete->delete('talk_rooms')
+			->where($delete->expr()->eq('id', $delete->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$delete->executeStatement();
 
 		$this->dispatcher->dispatch(self::EVENT_AFTER_ROOM_DELETE, $event);
+		if (class_exists(CriticalActionPerformedEvent::class)) {
+			$this->dispatcher->dispatchTyped(new CriticalActionPerformedEvent(
+				'Conversation "%s" deleted',
+				['name' => $this->getName()],
+			));
+		}
 	}
 
 	/**
-	 * @param string $newName Currently it is only allowed to rename: self::GROUP_CALL, self::PUBLIC_CALL
+	 * @param string $newName Currently it is only allowed to rename: self::TYPE_GROUP, self::TYPE_PUBLIC
+	 * @param string|null $oldName
 	 * @return bool True when the change was valid, false otherwise
 	 */
-	public function setName(string $newName): bool {
-		$oldName = $this->getName();
+	public function setName(string $newName, ?string $oldName = null): bool {
+		$oldName = $oldName !== null ? $oldName : $this->getName();
 		if ($newName === $oldName) {
 			return false;
 		}
@@ -402,11 +628,11 @@ class Room {
 		$event = new ModifyRoomEvent($this, 'name', $newName, $oldName);
 		$this->dispatcher->dispatch(self::EVENT_BEFORE_NAME_SET, $event);
 
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_rooms')
-			->set('name', $query->createNamedParameter($newName))
-			->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-		$query->execute();
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('name', $update->createNamedParameter($newName))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update->executeStatement();
 		$this->name = $newName;
 
 		$this->dispatcher->dispatch(self::EVENT_AFTER_NAME_SET, $event);
@@ -415,11 +641,43 @@ class Room {
 	}
 
 	/**
-	 * @param string $password Currently it is only allowed to have a password for Room::PUBLIC_CALL
+	 * @param string $description
+	 * @return bool True when the change was valid, false otherwise
+	 * @throws \LengthException when the given description is too long
+	 */
+	public function setDescription(string $description): bool {
+		$description = trim($description);
+
+		if (mb_strlen($description) > self::DESCRIPTION_MAXIMUM_LENGTH) {
+			throw new \LengthException('Conversation description is limited to ' . self::DESCRIPTION_MAXIMUM_LENGTH . ' characters');
+		}
+
+		$oldDescription = $this->getDescription();
+		if ($description === $oldDescription) {
+			return false;
+		}
+
+		$event = new ModifyRoomEvent($this, 'description', $description, $oldDescription);
+		$this->dispatcher->dispatch(self::EVENT_BEFORE_DESCRIPTION_SET, $event);
+
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('description', $update->createNamedParameter($description))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update->executeStatement();
+		$this->description = $description;
+
+		$this->dispatcher->dispatch(self::EVENT_AFTER_DESCRIPTION_SET, $event);
+
+		return true;
+	}
+
+	/**
+	 * @param string $password Currently it is only allowed to have a password for Room::TYPE_PUBLIC
 	 * @return bool True when the change was valid, false otherwise
 	 */
 	public function setPassword(string $password): bool {
-		if ($this->getType() !== self::PUBLIC_CALL) {
+		if ($this->getType() !== self::TYPE_PUBLIC) {
 			return false;
 		}
 
@@ -428,11 +686,11 @@ class Room {
 		$event = new ModifyRoomEvent($this, 'password', $password);
 		$this->dispatcher->dispatch(self::EVENT_BEFORE_PASSWORD_SET, $event);
 
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_rooms')
-			->set('password', $query->createNamedParameter($hash))
-			->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-		$query->execute();
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('password', $update->createNamedParameter($hash))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update->executeStatement();
 		$this->password = $hash;
 
 		$this->dispatcher->dispatch(self::EVENT_AFTER_PASSWORD_SET, $event);
@@ -445,11 +703,11 @@ class Room {
 	 * @return bool
 	 */
 	public function setLastActivity(\DateTime $now): bool {
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_rooms')
-			->set('last_activity', $query->createNamedParameter($now, 'datetime'))
-			->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-		$query->execute();
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('last_activity', $update->createNamedParameter($now, 'datetime'))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update->executeStatement();
 
 		$this->lastActivity = $now;
 
@@ -458,30 +716,44 @@ class Room {
 
 	/**
 	 * @param \DateTime $since
+	 * @param int $callFlag
 	 * @param bool $isGuest
 	 * @return bool
 	 */
-	public function setActiveSince(\DateTime $since, bool $isGuest): bool {
-		if ($isGuest && $this->getType() === self::PUBLIC_CALL) {
-			$query = $this->db->getQueryBuilder();
-			$query->update('talk_rooms')
-				->set('active_guests', $query->createFunction($query->getColumnName('active_guests') . ' + 1'))
-				->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-			$query->execute();
+	public function setActiveSince(\DateTime $since, int $callFlag, bool $isGuest): bool {
+		if ($isGuest && $this->getType() === self::TYPE_PUBLIC) {
+			$update = $this->db->getQueryBuilder();
+			$update->update('talk_rooms')
+				->set('active_guests', $update->createFunction($update->getColumnName('active_guests') . ' + 1'))
+				->set(
+					'call_flag',
+					$update->expr()->bitwiseOr('call_flag', $callFlag)
+				)
+				->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+			$update->executeStatement();
 
 			$this->activeGuests++;
+		} elseif (!$isGuest) {
+			$update = $this->db->getQueryBuilder();
+			$update->update('talk_rooms')
+				->set(
+					'call_flag',
+					$update->expr()->bitwiseOr('call_flag', $callFlag)
+				)
+				->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+			$update->executeStatement();
 		}
 
 		if ($this->activeSince instanceof \DateTime) {
 			return false;
 		}
 
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_rooms')
-			->set('active_since', $query->createNamedParameter($since, 'datetime'))
-			->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->isNull('active_since'));
-		$query->execute();
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('active_since', $update->createNamedParameter($since, IQueryBuilder::PARAM_DATE))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
+			->andWhere($update->expr()->isNull('active_since'));
+		$update->executeStatement();
 
 		$this->activeSince = $since;
 
@@ -489,53 +761,61 @@ class Room {
 	}
 
 	public function setLastMessage(IComment $message): void {
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_rooms')
-			->set('last_message', $query->createNamedParameter((int) $message->getId()))
-			->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-		$query->execute();
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('last_message', $update->createNamedParameter((int) $message->getId()))
+			->set('last_activity', $update->createNamedParameter($message->getCreationDateTime(), 'datetime'))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update->executeStatement();
+
+		$this->lastMessage = $message;
+		$this->lastMessageId = (int) $message->getId();
+		$this->lastActivity = $message->getCreationDateTime();
 	}
 
 	public function resetActiveSince(): bool {
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_rooms')
-			->set('active_guests', $query->createNamedParameter(0))
-			->set('active_since', $query->createNamedParameter(null, 'datetime'))
-			->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('active_guests', $update->createNamedParameter(0, IQueryBuilder::PARAM_INT))
+			->set('active_since', $update->createNamedParameter(null, IQueryBuilder::PARAM_DATE))
+			->set('call_flag', $update->createNamedParameter(0, IQueryBuilder::PARAM_INT))
+			->set('call_permissions', $update->createNamedParameter(Attendee::PERMISSIONS_DEFAULT, IQueryBuilder::PARAM_INT))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
+			->andWhere($update->expr()->isNotNull('active_since'));
 
 		$this->activeGuests = 0;
 		$this->activeSince = null;
 
-		return (bool) $query->execute();
+		return (bool) $update->executeStatement();
 	}
 
 	public function setAssignedSignalingServer(?int $signalingServer): bool {
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_rooms')
-			->set('assigned_hpb', $query->createNamedParameter($signalingServer))
-			->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('assigned_hpb', $update->createNamedParameter($signalingServer))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
 
 		if ($signalingServer !== null) {
-			$query->andWhere($query->expr()->isNull('assigned_hpb'));
+			$update->andWhere($update->expr()->isNull('assigned_hpb'));
 		}
 
-		return (bool) $query->execute();
+		return (bool) $update->executeStatement();
 	}
 
 	/**
-	 * @param int $newType Currently it is only allowed to change between `self::GROUP_CALL` and `self::PUBLIC_CALL`
+	 * @param int $newType Currently it is only allowed to change between `self::TYPE_GROUP` and `self::TYPE_PUBLIC`
 	 * @return bool True when the change was valid, false otherwise
 	 */
-	public function setType(int $newType): bool {
+	public function setType(int $newType, bool $allowSwitchingOneToOne = false): bool {
 		if ($newType === $this->getType()) {
 			return true;
 		}
 
-		if ($this->getType() === self::ONE_TO_ONE_CALL) {
+		if (!$allowSwitchingOneToOne && $this->getType() === self::TYPE_ONE_TO_ONE) {
 			return false;
 		}
 
-		if (!in_array($newType, [self::GROUP_CALL, self::PUBLIC_CALL], true)) {
+		if (!in_array($newType, [self::TYPE_GROUP, self::TYPE_PUBLIC], true)) {
 			return false;
 		}
 
@@ -544,21 +824,21 @@ class Room {
 		$event = new ModifyRoomEvent($this, 'type', $newType, $oldType);
 		$this->dispatcher->dispatch(self::EVENT_BEFORE_TYPE_SET, $event);
 
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_rooms')
-			->set('type', $query->createNamedParameter($newType, IQueryBuilder::PARAM_INT))
-			->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-		$query->execute();
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('type', $update->createNamedParameter($newType, IQueryBuilder::PARAM_INT))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update->executeStatement();
 
 		$this->type = $newType;
 
-		if ($oldType === self::PUBLIC_CALL) {
+		if ($oldType === self::TYPE_PUBLIC) {
 			// Kick all guests and users that were not invited
-			$query = $this->db->getQueryBuilder();
-			$query->delete('talk_participants')
-				->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-				->andWhere($query->expr()->in('participant_type', $query->createNamedParameter([Participant::GUEST, Participant::USER_SELF_JOINED], IQueryBuilder::PARAM_INT_ARRAY)));
-			$query->execute();
+			$delete = $this->db->getQueryBuilder();
+			$delete->delete('talk_attendees')
+				->where($delete->expr()->eq('room_id', $delete->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
+				->andWhere($delete->expr()->in('participant_type', $delete->createNamedParameter([Participant::GUEST, Participant::GUEST_MODERATOR, Participant::USER_SELF_JOINED], IQueryBuilder::PARAM_INT_ARRAY)));
+			$delete->executeStatement();
 		}
 
 		$this->dispatcher->dispatch(self::EVENT_AFTER_TYPE_SET, $event);
@@ -570,7 +850,7 @@ class Room {
 	 * @param int $newState Currently it is only allowed to change between
 	 * 						`self::READ_ONLY` and `self::READ_WRITE`
 	 * 						Also it's only allowed on rooms of type
-	 * 						`self::GROUP_CALL` and `self::PUBLIC_CALL`
+	 * 						`self::TYPE_GROUP` and `self::TYPE_PUBLIC`
 	 * @return bool True when the change was valid, false otherwise
 	 */
 	public function setReadOnly(int $newState): bool {
@@ -579,7 +859,7 @@ class Room {
 			return true;
 		}
 
-		if (!in_array($this->getType(), [self::GROUP_CALL, self::PUBLIC_CALL, self::CHANGELOG_CONVERSATION], true)) {
+		if (!in_array($this->getType(), [self::TYPE_GROUP, self::TYPE_PUBLIC, self::TYPE_CHANGELOG], true)) {
 			return false;
 		}
 
@@ -590,15 +870,55 @@ class Room {
 		$event = new ModifyRoomEvent($this, 'readOnly', $newState, $oldState);
 		$this->dispatcher->dispatch(self::EVENT_BEFORE_READONLY_SET, $event);
 
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_rooms')
-			->set('read_only', $query->createNamedParameter($newState, IQueryBuilder::PARAM_INT))
-			->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-		$query->execute();
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('read_only', $update->createNamedParameter($newState, IQueryBuilder::PARAM_INT))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update->executeStatement();
 
 		$this->readOnly = $newState;
 
 		$this->dispatcher->dispatch(self::EVENT_AFTER_READONLY_SET, $event);
+
+		return true;
+	}
+
+	/**
+	 * @param int $newState New listable scope from self::LISTABLE_*
+	 * 						Also it's only allowed on rooms of type
+	 * 						`self::TYPE_GROUP` and `self::TYPE_PUBLIC`
+	 * @return bool True when the change was valid, false otherwise
+	 */
+	public function setListable(int $newState): bool {
+		$oldState = $this->getListable();
+		if ($newState === $oldState) {
+			return true;
+		}
+
+		if (!in_array($this->getType(), [self::TYPE_GROUP, self::TYPE_PUBLIC], true)) {
+			return false;
+		}
+
+		if (!in_array($newState, [
+			Room::LISTABLE_NONE,
+			Room::LISTABLE_USERS,
+			Room::LISTABLE_ALL,
+		], true)) {
+			return false;
+		}
+
+		$event = new ModifyRoomEvent($this, 'listable', $newState, $oldState);
+		$this->dispatcher->dispatch(self::EVENT_BEFORE_LISTABLE_SET, $event);
+
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('listable', $update->createNamedParameter($newState, IQueryBuilder::PARAM_INT))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update->executeStatement();
+
+		$this->listable = $newState;
+
+		$this->dispatcher->dispatch(self::EVENT_AFTER_LISTABLE_SET, $event);
 
 		return true;
 	}
@@ -615,7 +935,7 @@ class Room {
 	public function setLobby(int $newState, ?\DateTime $dateTime, bool $timerReached = false): bool {
 		$oldState = $this->lobbyState;
 
-		if (!in_array($this->getType(), [self::GROUP_CALL, self::PUBLIC_CALL], true)) {
+		if (!in_array($this->getType(), [self::TYPE_GROUP, self::TYPE_PUBLIC], true)) {
 			return false;
 		}
 
@@ -630,313 +950,73 @@ class Room {
 		$event = new ModifyLobbyEvent($this, 'lobby', $newState, $oldState, $dateTime, $timerReached);
 		$this->dispatcher->dispatch(self::EVENT_BEFORE_LOBBY_STATE_SET, $event);
 
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_rooms')
-			->set('lobby_state', $query->createNamedParameter($newState, IQueryBuilder::PARAM_INT))
-			->set('lobby_timer', $query->createNamedParameter($dateTime, IQueryBuilder::PARAM_DATE))
-			->where($query->expr()->eq('id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-		$query->execute();
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('lobby_state', $update->createNamedParameter($newState, IQueryBuilder::PARAM_INT))
+			->set('lobby_timer', $update->createNamedParameter($dateTime, IQueryBuilder::PARAM_DATE))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update->executeStatement();
 
 		$this->lobbyState = $newState;
 
 		$this->dispatcher->dispatch(self::EVENT_AFTER_LOBBY_STATE_SET, $event);
 
-		if ($newState === Webinary::LOBBY_NON_MODERATORS) {
-			$participants = $this->getParticipantsInCall();
-			foreach ($participants as $participant) {
-				if ($participant->hasModeratorPermissions()) {
-					continue;
-				}
+		return true;
+	}
 
-				$this->changeInCall($participant, Participant::FLAG_DISCONNECTED);
-			}
+	public function setSIPEnabled(int $newSipEnabled): bool {
+		$oldSipEnabled = $this->sipEnabled;
+
+		if ($newSipEnabled === $oldSipEnabled) {
+			return false;
 		}
+
+		if (!in_array($this->getType(), [self::TYPE_GROUP, self::TYPE_PUBLIC], true)) {
+			return false;
+		}
+
+		if (!in_array($newSipEnabled, [Webinary::SIP_ENABLED, Webinary::SIP_DISABLED], true)) {
+			return false;
+		}
+
+		if (preg_match(self::SIP_INCOMPATIBLE_REGEX, $this->token)) {
+			return false;
+		}
+
+		$event = new ModifyRoomEvent($this, 'sipEnabled', $newSipEnabled, $oldSipEnabled);
+		$this->dispatcher->dispatch(self::EVENT_BEFORE_SIP_ENABLED_SET, $event);
+
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set('sip_enabled', $update->createNamedParameter($newSipEnabled, IQueryBuilder::PARAM_INT))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update->executeStatement();
+
+		$this->sipEnabled = $newSipEnabled;
+
+		$this->dispatcher->dispatch(self::EVENT_AFTER_SIP_ENABLED_SET, $event);
 
 		return true;
 	}
 
-	public function ensureOneToOneRoomIsFilled(): void {
-		if ($this->getType() !== self::ONE_TO_ONE_CALL) {
-			return;
+	public function setPermissions(string $level, int $newPermissions): bool {
+		if ($level !== 'default' && $level !== 'call') {
+			return false;
 		}
 
-		if ($this->getName() === '') {
-			return;
-		}
+		$update = $this->db->getQueryBuilder();
+		$update->update('talk_rooms')
+			->set($level . '_permissions', $update->createNamedParameter($newPermissions, IQueryBuilder::PARAM_INT))
+			->where($update->expr()->eq('id', $update->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
+		$update->executeStatement();
 
-		if ($this->manager->isValidParticipant($this->getName())) {
-			$this->addUsers([
-				'userId' => $this->getName(),
-				'participantType' => Participant::OWNER,
-			]);
-		}
-
-		$this->setName('');
-	}
-
-	/**
-	 * @param array ...$participants
-	 */
-	public function addUsers(array ...$participants): void {
-		$event = new AddParticipantsEvent($this, $participants);
-		$this->dispatcher->dispatch(self::EVENT_BEFORE_USERS_ADD, $event);
-
-		$lastMessage = 0;
-		if ($this->getLastMessage() instanceof IComment) {
-			$lastMessage = (int) $this->getLastMessage()->getId();
-		}
-
-		$query = $this->db->getQueryBuilder();
-		$query->insert('talk_participants')
-			->values(
-				[
-					'user_id' => $query->createParameter('user_id'),
-					'session_id' => $query->createParameter('session_id'),
-					'participant_type' => $query->createParameter('participant_type'),
-					'room_id' => $query->createNamedParameter($this->getId()),
-					'last_ping' => $query->createNamedParameter(0, IQueryBuilder::PARAM_INT),
-					'last_read_message' => $query->createNamedParameter($lastMessage, IQueryBuilder::PARAM_INT),
-				]
-			);
-
-		foreach ($participants as $participant) {
-			$query->setParameter('user_id', $participant['userId'])
-				->setParameter('session_id', $participant['sessionId'] ?? '0')
-				->setParameter('participant_type', $participant['participantType'] ?? Participant::USER, IQueryBuilder::PARAM_INT);
-
-			$query->execute();
-		}
-
-		$this->dispatcher->dispatch(self::EVENT_AFTER_USERS_ADD, $event);
-	}
-
-	/**
-	 * @param Participant $participant
-	 * @param int $participantType
-	 */
-	public function setParticipantType(Participant $participant, int $participantType): void {
-		$event = new ModifyParticipantEvent($this, $participant, 'type', $participantType, $participant->getParticipantType());
-		$this->dispatcher->dispatch(self::EVENT_BEFORE_PARTICIPANT_TYPE_SET, $event);
-
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_participants')
-			->set('participant_type', $query->createNamedParameter($participantType, IQueryBuilder::PARAM_INT))
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->eq('user_id', $query->createNamedParameter($participant->getUser())));
-
-		if ($participant->getUser() === '') {
-			$query->andWhere($query->expr()->eq('session_id', $query->createNamedParameter($participant->getSessionId())));
-		}
-
-		$query->execute();
-
-		$this->dispatcher->dispatch(self::EVENT_AFTER_PARTICIPANT_TYPE_SET, $event);
-	}
-
-	/**
-	 * @param IUser $user
-	 * @param string $reason
-	 */
-	public function removeUser(IUser $user, string $reason): void {
-		try {
-			$participant = $this->getParticipant($user->getUID());
-		} catch (ParticipantNotFoundException $e) {
-			return;
-		}
-
-		$event = new RemoveUserEvent($this, $participant, $user, $reason);
-		$this->dispatcher->dispatch(self::EVENT_BEFORE_USER_REMOVE, $event);
-
-		if ($this->getType() === self::ONE_TO_ONE_CALL) {
-			$this->setName($user->getUID());
-		}
-
-		$query = $this->db->getQueryBuilder();
-		$query->delete('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->eq('user_id', $query->createNamedParameter($user->getUID())));
-		$query->execute();
-
-		$this->dispatcher->dispatch(self::EVENT_AFTER_USER_REMOVE, $event);
-	}
-
-	/**
-	 * @param Participant $participant
-	 * @param string $reason
-	 */
-	public function removeParticipantBySession(Participant $participant, string $reason): void {
-		$event = new RemoveParticipantEvent($this, $participant, $reason);
-		$this->dispatcher->dispatch(self::EVENT_BEFORE_PARTICIPANT_REMOVE, $event);
-
-		$query = $this->db->getQueryBuilder();
-		$query->delete('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->eq('session_id', $query->createNamedParameter($participant->getSessionId())));
-		$query->execute();
-
-		$this->dispatcher->dispatch(self::EVENT_AFTER_PARTICIPANT_REMOVE, $event);
-	}
-
-	/**
-	 * @param IUser $user
-	 * @param string $password
-	 * @param bool $passedPasswordProtection
-	 * @return string
-	 * @throws InvalidPasswordException
-	 * @throws UnauthorizedException
-	 */
-	public function joinRoom(IUser $user, string $password, bool $passedPasswordProtection = false): string {
-		$event = new JoinRoomUserEvent($this, $user, $password, $passedPasswordProtection);
-		$this->dispatcher->dispatch(self::EVENT_BEFORE_ROOM_CONNECT, $event);
-
-		if ($event->getCancelJoin() === true) {
-			$this->removeUser($user, self::PARTICIPANT_LEFT);
-			throw new UnauthorizedException('Participant is not allowed to join');
-		}
-
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_participants')
-			->set('session_id', $query->createParameter('session_id'))
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->eq('user_id', $query->createNamedParameter($user->getUID())));
-
-		$sessionId = $this->secureRandom->generate(255);
-		$query->setParameter('session_id', $sessionId);
-		$result = $query->execute();
-
-		if ($result === 0) {
-			if (!$event->getPassedPasswordProtection() && !$this->verifyPassword($password)['result']) {
-				throw new InvalidPasswordException();
-			}
-
-			// User joining a public room, without being invited
-			$this->addUsers([
-				'userId' => $user->getUID(),
-				'participantType' => Participant::USER_SELF_JOINED,
-				'sessionId' => $sessionId,
-			]);
-		}
-
-		while (!$this->isSessionUnique($sessionId)) {
-			$sessionId = $this->secureRandom->generate(255);
-			$query->setParameter('session_id', $sessionId);
-			$query->execute();
-		}
-
-		$this->dispatcher->dispatch(self::EVENT_AFTER_ROOM_CONNECT, $event);
-
-		return $sessionId;
-	}
-
-	/**
-	 * @param string $userId
-	 * @param string|null $sessionId
-	 */
-	public function leaveRoom(string $userId, ?string $sessionId = null): void {
-		try {
-			$participant = $this->getParticipant($userId);
-		} catch (ParticipantNotFoundException $e) {
-			return;
-		}
-
-		$event = new ParticipantEvent($this, $participant);
-		$this->dispatcher->dispatch(self::EVENT_BEFORE_ROOM_DISCONNECT, $event);
-
-		// Reset session when leaving a normal room
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_participants')
-			->set('session_id', $query->createNamedParameter('0'))
-			->set('in_call', $query->createNamedParameter(0, IQueryBuilder::PARAM_INT))
-			->where($query->expr()->eq('user_id', $query->createNamedParameter($userId)))
-			->andWhere($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->neq('participant_type', $query->createNamedParameter(Participant::USER_SELF_JOINED, IQueryBuilder::PARAM_INT)));
-		if (!empty($sessionId)) {
-			$query->andWhere($query->expr()->eq('session_id', $query->createNamedParameter($sessionId)));
-		}
-		$query->execute();
-
-		// And kill session when leaving a self joined room
-		$query = $this->db->getQueryBuilder();
-		$query->delete('talk_participants')
-			->where($query->expr()->eq('user_id', $query->createNamedParameter($userId)))
-			->andWhere($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->eq('participant_type', $query->createNamedParameter(Participant::USER_SELF_JOINED, IQueryBuilder::PARAM_INT)));
-		if (!empty($sessionId)) {
-			$query->andWhere($query->expr()->eq('session_id', $query->createNamedParameter($sessionId)));
-		}
-		$query->execute();
-
-		$this->dispatcher->dispatch(self::EVENT_AFTER_ROOM_DISCONNECT, $event);
-	}
-
-	/**
-	 * @param string $password
-	 * @param bool $passedPasswordProtection
-	 * @return string
-	 * @throws InvalidPasswordException
-	 * @throws UnauthorizedException
-	 */
-	public function joinRoomGuest(string $password, bool $passedPasswordProtection = false): string {
-		$event = new JoinRoomGuestEvent($this, $password, $passedPasswordProtection);
-		$this->dispatcher->dispatch(self::EVENT_BEFORE_GUEST_CONNECT, $event);
-
-		if ($event->getCancelJoin()) {
-			throw new UnauthorizedException('Participant is not allowed to join');
-		}
-
-		if (!$event->getPassedPasswordProtection() && !$this->verifyPassword($password)['result']) {
-			throw new InvalidPasswordException();
-		}
-
-		$lastMessage = 0;
-		if ($this->getLastMessage() instanceof IComment) {
-			$lastMessage = (int) $this->getLastMessage()->getId();
-		}
-
-		$sessionId = $this->secureRandom->generate(255);
-		while (!$this->db->insertIfNotExist('*PREFIX*talk_participants', [
-			'user_id' => '',
-			'room_id' => $this->getId(),
-			'last_ping' => 0,
-			'session_id' => $sessionId,
-			'participant_type' => Participant::GUEST,
-			'last_read_message' => $lastMessage,
-		], ['session_id'])) {
-			$sessionId = $this->secureRandom->generate(255);
-		}
-
-		$this->dispatcher->dispatch(self::EVENT_AFTER_GUEST_CONNECT, $event);
-
-		return $sessionId;
-	}
-
-	public function changeInCall(Participant $participant, int $flags): void {
-		$event = new ModifyParticipantEvent($this, $participant, 'inCall', $flags, $participant->getInCallFlags());
-		if ($flags !== Participant::FLAG_DISCONNECTED) {
-			$this->dispatcher->dispatch(self::EVENT_BEFORE_SESSION_JOIN_CALL, $event);
+		if ($level === 'default') {
+			$this->defaultPermissions = $newPermissions;
 		} else {
-			$this->dispatcher->dispatch(self::EVENT_BEFORE_SESSION_LEAVE_CALL, $event);
+			$this->callPermissions = $newPermissions;
 		}
 
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_participants')
-			->set('in_call', $query->createNamedParameter($flags, IQueryBuilder::PARAM_INT))
-			->where($query->expr()->eq('session_id', $query->createNamedParameter($participant->getSessionId())))
-			->andWhere($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-
-		if ($flags !== Participant::FLAG_DISCONNECTED) {
-			$query->set('last_joined_call', $query->createNamedParameter(
-				$this->timeFactory->getDateTime(), IQueryBuilder::PARAM_DATE
-			));
-		}
-
-		$query->execute();
-
-		if ($flags !== Participant::FLAG_DISCONNECTED) {
-			$this->dispatcher->dispatch(self::EVENT_AFTER_SESSION_JOIN_CALL, $event);
-		} else {
-			$this->dispatcher->dispatch(self::EVENT_AFTER_SESSION_LEAVE_CALL, $event);
-		}
+		return true;
 	}
 
 	/**
@@ -958,338 +1038,5 @@ class Room {
 			'result' => !$this->hasPassword() || $this->hasher->verify($password, $this->password),
 			'url' => '',
 		];
-	}
-
-	/**
-	 * @param string $sessionId
-	 * @return bool
-	 */
-	protected function isSessionUnique(string $sessionId): bool {
-		$query = $this->db->getQueryBuilder();
-		$query->selectAlias($query->createFunction('COUNT(*)'), 'num_sessions')
-			->from('talk_participants')
-			->where($query->expr()->eq('session_id', $query->createNamedParameter($sessionId)));
-		$result = $query->execute();
-		$numSessions = (int) $result->fetchColumn();
-		$result->closeCursor();
-
-		return $numSessions === 1;
-	}
-
-	public function cleanGuestParticipants(): void {
-		$event = new RoomEvent($this);
-		$this->dispatcher->dispatch(self::EVENT_BEFORE_GUESTS_CLEAN, $event);
-
-		$query = $this->db->getQueryBuilder();
-		$query->delete('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->emptyString('user_id'))
-			->andWhere($query->expr()->lte('last_ping', $query->createNamedParameter($this->timeFactory->getTime() - 100, IQueryBuilder::PARAM_INT)));
-		$query->execute();
-
-		$this->dispatcher->dispatch(self::EVENT_AFTER_GUESTS_CLEAN, $event);
-	}
-
-	/**
-	 * @param int $lastPing When the last ping is older than the given timestamp, the user is ignored
-	 * @return Participant[]
-	 */
-	public function getParticipants(int $lastPing = 0): array {
-		$query = $this->db->getQueryBuilder();
-		$query->select('*')
-			->from('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-
-		if ($lastPing > 0) {
-			$query->andWhere($query->expr()->gt('last_ping', $query->createNamedParameter($lastPing, IQueryBuilder::PARAM_INT)));
-		}
-
-		$result = $query->execute();
-
-		$participants = [];
-		while ($row = $result->fetch()) {
-			$participants[] = $this->manager->createParticipantObject($this, $row);
-		}
-		$result->closeCursor();
-
-		return $participants;
-	}
-
-	/**
-	 * @return Participant[]
-	 */
-	public function getParticipantsInCall(): array {
-		$query = $this->db->getQueryBuilder();
-		$query->select('*')
-			->from('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->neq('in_call', $query->createNamedParameter(Participant::FLAG_DISCONNECTED)));
-
-		$result = $query->execute();
-
-		$participants = [];
-		while ($row = $result->fetch()) {
-			$participants[] = $this->manager->createParticipantObject($this, $row);
-		}
-		$result->closeCursor();
-
-		return $participants;
-	}
-
-	/**
-	 * @param int $lastPing When the last ping is older than the given timestamp, the user is ignored
-	 * @return array[] Array of users with [users => [userId => [lastPing, sessionId]], guests => [[lastPing, sessionId]]]
-	 * @deprecated Use self::getParticipants() instead
-	 */
-	public function getParticipantsLegacy(int $lastPing = 0): array {
-		$query = $this->db->getQueryBuilder();
-		$query->select('*')
-			->from('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-
-		if ($lastPing > 0) {
-			$query->andWhere($query->expr()->gt('last_ping', $query->createNamedParameter($lastPing, IQueryBuilder::PARAM_INT)));
-		}
-
-		$result = $query->execute();
-
-		$users = $guests = [];
-		while ($row = $result->fetch()) {
-			if ($row['user_id'] !== '' && $row['user_id'] !== null) {
-				$users[$row['user_id']] = [
-					'inCall' => (int) $row['in_call'],
-					'lastPing' => (int) $row['last_ping'],
-					'sessionId' => $row['session_id'],
-					'participantType' => (int) $row['participant_type'],
-				];
-			} else {
-				$guests[] = [
-					'inCall' => (int) $row['in_call'],
-					'lastPing' => (int) $row['last_ping'],
-					'participantType' => (int) $row['participant_type'],
-					'sessionId' => $row['session_id'],
-				];
-			}
-		}
-		$result->closeCursor();
-
-		return [
-			'users' => $users,
-			'guests' => $guests,
-		];
-	}
-
-	/**
-	 * @param null|\DateTime $maxLastJoined When the "last joined call" is older than the given DateTime, the user is ignored
-	 * @return string[]
-	 */
-	public function getParticipantUserIds(\DateTime $maxLastJoined = null): array {
-		$query = $this->db->getQueryBuilder();
-		$query->select('user_id')
-			->from('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->nonEmptyString('user_id'));
-
-		if ($maxLastJoined instanceof \DateTimeInterface) {
-			$query->andWhere($query->expr()->gte('last_joined_call', $query->createNamedParameter($maxLastJoined, IQueryBuilder::PARAM_DATE)));
-		}
-
-		$result = $query->execute();
-
-		$users = [];
-		while ($row = $result->fetch()) {
-			$users[] = $row['user_id'];
-		}
-		$result->closeCursor();
-
-		return $users;
-	}
-
-	/**
-	 * @param int $notificationLevel
-	 * @return Participant[] Array of participants
-	 */
-	public function getParticipantsByNotificationLevel(int $notificationLevel): array {
-		$query = $this->db->getQueryBuilder();
-		$query->select('*')
-			->from('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->eq('notification_level', $query->createNamedParameter($notificationLevel, IQueryBuilder::PARAM_INT)));
-		$result = $query->execute();
-
-		$participants = [];
-		while ($row = $result->fetch()) {
-			$participants[] = $this->manager->createParticipantObject($this, $row);
-		}
-		$result->closeCursor();
-
-		return $participants;
-	}
-
-	/**
-	 * @return bool
-	 */
-	public function hasActiveSessions(): bool {
-		$query = $this->db->getQueryBuilder();
-		$query->select('room_id')
-			->from('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->neq('session_id', $query->createNamedParameter('0')))
-			->setMaxResults(1);
-		$result = $query->execute();
-		$row = $result->fetch();
-		$result->closeCursor();
-
-		return (bool) $row;
-	}
-
-	/**
-	 * @return string[]
-	 */
-	public function getActiveSessions(): array {
-		$query = $this->db->getQueryBuilder();
-		$query->select('session_id')
-			->from('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->neq('session_id', $query->createNamedParameter('0')));
-		$result = $query->execute();
-
-		$sessions = [];
-		while ($row = $result->fetch()) {
-			$sessions[] = $row['session_id'];
-		}
-		$result->closeCursor();
-
-		return $sessions;
-	}
-
-	/**
-	 * Get all user ids which are participants in a room but currently not in the call
-	 * @return string[]
-	 */
-	public function getNotInCallUserIds(): array {
-		$query = $this->db->getQueryBuilder();
-		$query->select('user_id')
-			->from('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->nonEmptyString('user_id'))
-			->andWhere($query->expr()->eq('in_call', $query->createNamedParameter(0, IQueryBuilder::PARAM_INT)));
-		$result = $query->execute();
-
-		$userIds = [];
-		while ($row = $result->fetch()) {
-			$userIds[] = $row['user_id'];
-		}
-		$result->closeCursor();
-
-		return $userIds;
-	}
-
-	/**
-	 * @return bool
-	 */
-	public function hasSessionsInCall(): bool {
-		$query = $this->db->getQueryBuilder();
-		$query->select('session_id')
-			->from('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->neq('in_call', $query->createNamedParameter(Participant::FLAG_DISCONNECTED, IQueryBuilder::PARAM_INT)))
-			->setMaxResults(1);
-		$result = $query->execute();
-		$row = $result->fetch();
-		$result->closeCursor();
-
-		return (bool) $row;
-	}
-
-	public function getNumberOfModerators(bool $ignoreGuests = true): int {
-		$types = [
-			Participant::OWNER,
-			Participant::MODERATOR,
-		];
-		if (!$ignoreGuests) {
-			$types[] = Participant::GUEST_MODERATOR;
-		}
-
-		$query = $this->db->getQueryBuilder();
-		$query->select($query->func()->count('*', 'num_moderators'))
-			->from('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->in('participant_type', $query->createNamedParameter($types, IQueryBuilder::PARAM_INT_ARRAY)));
-
-		$result = $query->execute();
-		$row = $result->fetch();
-		$result->closeCursor();
-
-		return (int) ($row['num_moderators'] ?? 0);
-	}
-
-	/**
-	 * @param bool $ignoreGuests
-	 * @param int $lastPing When the last ping is older than the given timestamp, the user is ignored
-	 * @return int
-	 */
-	public function getNumberOfParticipants(bool $ignoreGuests = true, int $lastPing = 0): int {
-		$query = $this->db->getQueryBuilder();
-		$query->select($query->func()->count('*', 'num_participants'))
-			->from('talk_participants')
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-
-		if ($lastPing > 0) {
-			$query->andWhere($query->expr()->gt('last_ping', $query->createNamedParameter($lastPing, IQueryBuilder::PARAM_INT)));
-		}
-
-		if ($ignoreGuests) {
-			$query->andWhere($query->expr()->notIn('participant_type', $query->createNamedParameter([
-				Participant::GUEST,
-				Participant::GUEST_MODERATOR,
-				Participant::USER_SELF_JOINED,
-			], IQueryBuilder::PARAM_INT_ARRAY)));
-		}
-
-		$result = $query->execute();
-		$row = $result->fetch();
-		$result->closeCursor();
-
-		return (int) ($row['num_participants'] ?? 0);
-	}
-
-	public function markUsersAsMentioned(array $userIds, int $messageId): void {
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_participants')
-			->set('last_mention_message', $query->createNamedParameter($messageId, IQueryBuilder::PARAM_INT))
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->in('user_id', $query->createNamedParameter($userIds, IQueryBuilder::PARAM_STR_ARRAY)));
-		$query->execute();
-	}
-
-	/**
-	 * @param string|null $userId
-	 * @param string $sessionId
-	 * @param int $timestamp
-	 */
-	public function ping(?string $userId, string $sessionId, int $timestamp): void {
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_participants')
-			->set('last_ping', $query->createNamedParameter($timestamp, IQueryBuilder::PARAM_INT))
-			->where($query->expr()->eq('user_id', $query->createNamedParameter((string) $userId)))
-			->andWhere($query->expr()->eq('session_id', $query->createNamedParameter($sessionId)))
-			->andWhere($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)));
-
-		$query->execute();
-	}
-
-	/**
-	 * @param string[] $sessionIds
-	 * @param int $timestamp
-	 */
-	public function pingSessionIds(array $sessionIds, int $timestamp): void {
-		$query = $this->db->getQueryBuilder();
-		$query->update('talk_participants')
-			->set('last_ping', $query->createNamedParameter($timestamp, IQueryBuilder::PARAM_INT))
-			->where($query->expr()->eq('room_id', $query->createNamedParameter($this->getId(), IQueryBuilder::PARAM_INT)))
-			->andWhere($query->expr()->in('session_id', $query->createNamedParameter($sessionIds, IQueryBuilder::PARAM_STR_ARRAY)));
-
-		$query->execute();
 	}
 }

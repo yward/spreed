@@ -36,22 +36,15 @@ use OCP\IUserManager;
 use OCP\L10N\IFactory;
 
 abstract class Base implements IProvider {
-
-	/** @var IFactory */
-	protected $languageFactory;
-	/** @var IURLGenerator */
-	protected $url;
-	/** @var Config */
-	protected $config;
-	/** @var IManager */
-	protected $activityManager;
-	/** @var IUserManager */
-	protected $userManager;
-	/** @var Manager */
-	protected $manager;
+	protected IFactory $languageFactory;
+	protected IURLGenerator $url;
+	protected Config $config;
+	protected IManager $activityManager;
+	protected IUserManager $userManager;
+	protected Manager $manager;
 
 	/** @var string[] */
-	protected $displayNames = [];
+	protected array $displayNames = [];
 
 	public function __construct(IFactory $languageFactory,
 								IURLGenerator $url,
@@ -110,13 +103,13 @@ abstract class Base implements IProvider {
 
 	protected function getRoom(Room $room, string $userId): array {
 		switch ($room->getType()) {
-			case Room::ONE_TO_ONE_CALL:
+			case Room::TYPE_ONE_TO_ONE:
 				$stringType = 'one2one';
 				break;
-			case Room::GROUP_CALL:
+			case Room::TYPE_GROUP:
 				$stringType = 'group';
 				break;
-			case Room::PUBLIC_CALL:
+			case Room::TYPE_PUBLIC:
 			default:
 				$stringType = 'public';
 				break;
@@ -136,7 +129,7 @@ abstract class Base implements IProvider {
 			'type' => 'call',
 			'id' => $roomId,
 			'name' => $l->t('a conversation'),
-			'call-type' => Room::UNKNOWN_CALL,
+			'call-type' => Room::TYPE_UNKNOWN,
 		];
 	}
 

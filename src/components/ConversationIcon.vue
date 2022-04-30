@@ -20,14 +20,20 @@
 -->
 
 <template>
-	<div class="conversation-icon">
+	<div class="conversation-icon"
+		:class="{'offline': offline}">
 		<div v-if="iconClass"
 			class="avatar icon"
 			:class="iconClass" />
 		<Avatar v-else
 			:size="44"
 			:user="item.name"
+			:disable-menu="disableMenu"
 			:display-name="item.displayName"
+			:preloaded-user-status="preloadedUserStatus"
+			:show-user-status-compact="disableMenu"
+			:menu-container="menuContainer"
+			menu-position="left"
 			class="conversation-icon__avatar" />
 		<div v-if="showCall"
 			class="overlap-icon">
@@ -63,9 +69,13 @@ export default {
 			type: Boolean,
 			default: true,
 		},
+		disableMenu: {
+			type: Boolean,
+			default: false,
+		},
 		item: {
 			type: Object,
-			default: function() {
+			default() {
 				return {
 					objectType: '',
 					type: 0,
@@ -74,7 +84,16 @@ export default {
 				}
 			},
 		},
+
+		/**
+		 * Reduces the opacity of the icon if true
+		 */
+		offline: {
+			type: Boolean,
+			default: false,
+		},
 	},
+
 	computed: {
 		showCall() {
 			return !this.hideCall && this.item.hasCall
@@ -99,6 +118,26 @@ export default {
 
 			return ''
 		},
+		preloadedUserStatus() {
+			if (Object.prototype.hasOwnProperty.call(this.item, 'statusMessage')) {
+				// We preloaded the status
+				return {
+					status: this.item.status || null,
+					message: this.item.statusMessage || null,
+					icon: this.item.statusIcon || null,
+				}
+			}
+			return undefined
+		},
+		menuContainer() {
+			// The store may not be defined in the RoomSelector if used from
+			// the Collaboration menu outside Talk.
+			if (!this.$store) {
+				return undefined
+			}
+
+			return this.$store.getters.getMainContainerSelector()
+		},
 	},
 }
 </script>
@@ -109,12 +148,13 @@ $icon-size: 44px;
 .conversation-icon {
 	width: $icon-size;
 	height: $icon-size;
+	position: relative;
 
 	.avatar.icon {
 		width: $icon-size;
 		height: $icon-size;
 		line-height: $icon-size;
-		font-size: $icon-size / 2;
+		font-size: calc($icon-size / 2);
 		background-color: var(--color-background-darker);
 
 		&.icon-changelog {
@@ -126,14 +166,14 @@ $icon-size: 44px;
 		&.icon-password,
 		&.icon-file,
 		&.icon-mail {
-			background-size: $icon-size / 2;
+			background-size: calc($icon-size / 2);
 		}
 	}
 
 	.overlap-icon {
 		position: absolute;
-		top: 6px;
-		left: $icon-size - 6px;
+		top: 0;
+		left: calc(#{$icon-size} - 12px);
 		line-height: 100%;
 
 		.icon-favorite {
@@ -148,6 +188,10 @@ $icon-size: 44px;
 			background-image: var(--icon-video-E9322D);
 		}
 	}
+}
+
+.offline {
+	opacity: .4;
 }
 
 </style>

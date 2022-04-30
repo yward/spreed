@@ -2,7 +2,7 @@
  *
  * @copyright Copyright (c) 2019, Daniel Calviño Sánchez (danxuliu@gmail.com)
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -19,54 +19,24 @@
  *
  */
 
+import EmitterMixin from '../../EmitterMixin'
+
 import CallParticipantModel from './CallParticipantModel'
 
+/**
+ *
+ */
 export default function CallParticipantCollection() {
 
-	this.callParticipantModels = []
+	this._superEmitterMixin()
 
-	this._handlers = []
+	this.callParticipantModels = []
 
 }
 
 CallParticipantCollection.prototype = {
 
-	on: function(event, handler) {
-		if (!this._handlers.hasOwnProperty(event)) {
-			this._handlers[event] = [handler]
-		} else {
-			this._handlers[event].push(handler)
-		}
-	},
-
-	off: function(event, handler) {
-		const handlers = this._handlers[event]
-		if (!handlers) {
-			return
-		}
-
-		const index = handlers.indexOf(handler)
-		if (index !== -1) {
-			handlers.splice(index, 1)
-		}
-	},
-
-	_trigger: function(event, args) {
-		let handlers = this._handlers[event]
-		if (!handlers) {
-			return
-		}
-
-		args.unshift(this)
-
-		handlers = handlers.slice(0)
-		for (let i = 0; i < handlers.length; i++) {
-			const handler = handlers[i]
-			handler.apply(handler, args)
-		}
-	},
-
-	add: function(options) {
+	add(options) {
 		const callParticipantModel = new CallParticipantModel(options)
 		this.callParticipantModels.push(callParticipantModel)
 
@@ -75,13 +45,13 @@ CallParticipantCollection.prototype = {
 		return callParticipantModel
 	},
 
-	get: function(peerId) {
+	get(peerId) {
 		return this.callParticipantModels.find(function(callParticipantModel) {
 			return callParticipantModel.attributes.peerId === peerId
 		})
 	},
 
-	remove: function(peerId) {
+	remove(peerId) {
 		const index = this.callParticipantModels.findIndex(function(callParticipantModel) {
 			return callParticipantModel.attributes.peerId === peerId
 		})
@@ -91,7 +61,13 @@ CallParticipantCollection.prototype = {
 			this.callParticipantModels.splice(index, 1)
 
 			this._trigger('remove', [callParticipantModel])
+
+			callParticipantModel.destroy()
+			return true
 		}
+		return false
 	},
 
 }
+
+EmitterMixin.apply(CallParticipantCollection.prototype)

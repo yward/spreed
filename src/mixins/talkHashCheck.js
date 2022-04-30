@@ -3,7 +3,7 @@
  *
  * @author Marco Ambrosini <marcoambrosini@pm.me>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -20,7 +20,7 @@
  *
  */
 
-import { showError } from '@nextcloud/dialogs'
+import { showError, TOAST_PERMANENT_TIMEOUT } from '@nextcloud/dialogs'
 
 const talkHashCheck = {
 	data() {
@@ -51,7 +51,7 @@ const talkHashCheck = {
 
 			this.reloadWarningShown = true
 			showError(t('spreed', 'Nextcloud Talk was updated, please reload the page'), {
-				timeout: 0,
+				timeout: TOAST_PERMANENT_TIMEOUT,
 			})
 		},
 	},

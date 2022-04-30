@@ -38,7 +38,7 @@ lint-fix:
 	npm run lint:fix
 
 npm-init:
-	npm install
+	npm ci
 
 npm-update:
 	npm update
@@ -63,6 +63,7 @@ appstore:
 	--exclude=composer.json \
 	--exclude=composer.lock \
 	--exclude=docs \
+	--exclude=.drone.jsonnet \
 	--exclude=.drone.yml \
 	--exclude=.eslintignore \
 	--exclude=.eslintrc.js \
@@ -77,8 +78,11 @@ appstore:
 	--exclude=node_modules \
 	--exclude=package.json \
 	--exclude=package-lock.json \
-	--exclude=.php_cs.dist \
+	--exclude=.php-cs-fixer.cache \
+	--exclude=.php-cs-fixer.dist.php \
 	--exclude=.php_cs.cache \
+	--exclude=.php_cs.dist \
+	--exclude=psalm.xml \
 	--exclude=README.md \
 	--exclude=src \
 	--exclude=.stylelintignore \
@@ -86,7 +90,7 @@ appstore:
 	--exclude=.tx \
 	--exclude=tests \
 	--exclude=vendor \
-	--exclude=webpack.*.js \
+	--exclude=webpack.js \
 	$(project_dir)/  $(sign_dir)/$(app_name)
 	@if [ -f $(cert_dir)/$(app_name).key ]; then \
 		echo "Signing app files…"; \
@@ -95,9 +99,9 @@ appstore:
 			--certificate=$(cert_dir)/$(app_name).crt\
 			--path=$(sign_dir)/$(app_name); \
 	fi
-	tar -czf $(build_dir)/$(app_name)-$(version).tar.gz \
+	tar -czf $(build_dir)/$(app_name).tar.gz \
 		-C $(sign_dir) $(app_name)
 	@if [ -f $(cert_dir)/$(app_name).key ]; then \
 		echo "Signing package…"; \
-		openssl dgst -sha512 -sign $(cert_dir)/$(app_name).key $(build_dir)/$(app_name)-$(version).tar.gz | openssl base64; \
+		openssl dgst -sha512 -sign $(cert_dir)/$(app_name).key $(build_dir)/$(app_name).tar.gz | openssl base64; \
 	fi

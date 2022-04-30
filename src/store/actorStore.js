@@ -3,7 +3,7 @@
  *
  * @author Joas Schilling <coding@schilljs.com>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -27,13 +27,12 @@
  * If an as no userId, they are a guest and identified by actorType + sessionId.
  */
 
-import sha1 from 'crypto-js/sha1'
 import { PARTICIPANT } from '../constants'
 
 const state = {
 	userId: null,
 	sessionId: null,
-	sessionHash: null,
+	attendeeId: null,
 	actorId: null,
 	actorType: null,
 	displayName: '',
@@ -46,8 +45,8 @@ const getters = {
 	getSessionId: (state) => () => {
 		return state.sessionId
 	},
-	getSessionHash: (state) => () => {
-		return state.sessionHash
+	getAttendeeId: (state) => () => {
+		return state.attendeeId
 	},
 	getActorId: (state) => () => {
 		return state.actorId
@@ -59,13 +58,11 @@ const getters = {
 		return state.displayName
 	},
 	getParticipantIdentifier: (state) => () => {
-		if (state.actorType === 'guests') {
-			return {
-				sessionId: state.sessionId,
-			}
-		}
 		return {
-			userId: state.userId,
+			attendeeId: state.attendeeId,
+			actorType: state.actorType,
+			actorId: state.actorId,
+			sessionId: state.sessionId,
 		}
 	},
 }
@@ -82,6 +79,15 @@ const mutations = {
 		state.actorId = userId
 	},
 	/**
+	 * Set the attendeeId
+	 *
+	 * @param {object} state current store state;
+	 * @param {string} attendeeId The actors attendee id
+	 */
+	setAttendeeId(state, attendeeId) {
+		state.attendeeId = attendeeId
+	},
+	/**
 	 * Set the sessionId
 	 *
 	 * @param {object} state current store state;
@@ -89,7 +95,6 @@ const mutations = {
 	 */
 	setSessionId(state, sessionId) {
 		state.sessionId = sessionId
-		state.sessionHash = sha1(sessionId)
 	},
 	/**
 	 * Set the actorId
@@ -134,6 +139,7 @@ const actions = {
 		context.commit('setUserId', user.uid)
 		context.commit('setDisplayName', user.displayName || user.uid)
 		context.commit('setActorType', 'users')
+		context.commit('setActorId', user.uid)
 	},
 
 	/**
@@ -141,22 +147,26 @@ const actions = {
 	 *
 	 * @param {object} context default store context;
 	 * @param {object} participant The participant data
-	 * @param {int} participant.participantType The type of the participant
+	 * @param {number} participant.attendeeId The attendee id of the participant
+	 * @param {number} participant.participantType The type of the participant
 	 * @param {string} participant.sessionId The session id of the participant
+	 * @param {string} participant.actorId The actor id of the participant
 	 */
 	setCurrentParticipant(context, participant) {
 		context.commit('setSessionId', participant.sessionId)
+		context.commit('setAttendeeId', participant.attendeeId)
 
 		if (participant.participantType === PARTICIPANT.TYPE.GUEST
 			|| participant.participantType === PARTICIPANT.TYPE.GUEST_MODERATOR) {
 			context.commit('setUserId', null)
 			context.commit('setActorType', 'guests')
-			context.commit('setActorId', 'guest/' + context.getters.getSessionHash())
+			context.commit('setActorId', participant.actorId)
 			// FIXME context.commit('setDisplayName', '')
 		}
 	},
 	/**
 	 * Sets displayName only, we currently use this for guests user names.
+	 *
 	 * @param {object} context default store context;
 	 * @param {string} displayName the display name to be set;
 	 */

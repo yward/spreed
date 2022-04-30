@@ -23,22 +23,28 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Signaling;
 
+use OCA\Talk\Model\Session;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
+use OCP\AppFramework\Db\TTransactional;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\DB\QueryBuilder\IQueryBuilder;
 use OCP\IDBConnection;
 
 class Messages {
+	use TTransactional;
 
-	/** @var IDBConnection */
-	protected $db;
+	protected IDBConnection $db;
 
-	/** @var ITimeFactory */
-	protected $timeFactory;
+	protected ParticipantService $participantService;
+
+	protected ITimeFactory $timeFactory;
 
 	public function __construct(IDBConnection $db,
+								ParticipantService $participantService,
 								ITimeFactory $timeFactory) {
 		$this->db = $db;
+		$this->participantService = $participantService;
 		$this->timeFactory = $timeFactory;
 	}
 
@@ -46,11 +52,14 @@ class Messages {
 	 * @param string[] $sessionIds
 	 */
 	public function deleteMessages(array $sessionIds): void {
-		$query = $this->db->getQueryBuilder();
-		$query->delete('talk_signaling')
-			->where($query->expr()->in('recipient', $query->createNamedParameter($sessionIds, IQueryBuilder::PARAM_STR_ARRAY)))
-			->orWhere($query->expr()->in('sender', $query->createNamedParameter($sessionIds, IQueryBuilder::PARAM_STR_ARRAY)));
-		$query->execute();
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('talk_internalsignaling')
+			->where($delete->expr()->in('recipient', $delete->createNamedParameter($sessionIds, IQueryBuilder::PARAM_STR_ARRAY)))
+			->orWhere($delete->expr()->in('sender', $delete->createNamedParameter($sessionIds, IQueryBuilder::PARAM_STR_ARRAY)));
+
+		$this->atomic(function () use ($delete) {
+			$delete->executeStatement();
+		}, $this->db);
 	}
 
 	/**
@@ -59,17 +68,17 @@ class Messages {
 	 * @param string $message
 	 */
 	public function addMessage(string $senderSessionId, string $recipientSessionId, string $message): void {
-		$query = $this->db->getQueryBuilder();
-		$query->insert('talk_signaling')
+		$insert = $this->db->getQueryBuilder();
+		$insert->insert('talk_internalsignaling')
 			->values(
 				[
-					'sender' => $query->createNamedParameter($senderSessionId),
-					'recipient' => $query->createNamedParameter($recipientSessionId),
-					'timestamp' => $query->createNamedParameter($this->timeFactory->getTime()),
-					'message' => $query->createNamedParameter($message),
+					'sender' => $insert->createNamedParameter($senderSessionId),
+					'recipient' => $insert->createNamedParameter($recipientSessionId),
+					'timestamp' => $insert->createNamedParameter($this->timeFactory->getTime()),
+					'message' => $insert->createNamedParameter($message),
 				]
 			);
-		$query->execute();
+		$insert->executeStatement();
 	}
 
 	/**
@@ -77,22 +86,28 @@ class Messages {
 	 * @param string $message
 	 */
 	public function addMessageForAllParticipants(Room $room, string $message): void {
-		$query = $this->db->getQueryBuilder();
-		$query->insert('talk_signaling')
+		$insert = $this->db->getQueryBuilder();
+		$insert->insert('talk_internalsignaling')
 			->values(
 				[
-					'sender' => $query->createParameter('sender'),
-					'recipient' => $query->createParameter('recipient'),
-					'timestamp' => $query->createNamedParameter($this->timeFactory->getTime()),
-					'message' => $query->createNamedParameter($message),
+					'sender' => $insert->createParameter('sender'),
+					'recipient' => $insert->createParameter('recipient'),
+					'timestamp' => $insert->createNamedParameter($this->timeFactory->getTime()),
+					'message' => $insert->createNamedParameter($message),
 				]
 			);
 
-		foreach ($room->getActiveSessions() as $sessionId) {
-			$query->setParameter('sender', $sessionId)
-				->setParameter('recipient', $sessionId)
-				->execute();
-		}
+		$participants = $this->participantService->getParticipantsForAllSessions($room);
+		$this->atomic(function () use ($participants, $insert) {
+			foreach ($participants as $participant) {
+				$session = $participant->getSession();
+				if ($session instanceof Session) {
+					$insert->setParameter('sender', $session->getSessionId())
+						->setParameter('recipient', $session->getSessionId())
+						->executeStatement();
+				}
+			}
+		}, $this->db);
 	}
 
 	/**
@@ -112,21 +127,25 @@ class Messages {
 
 		$query = $this->db->getQueryBuilder();
 		$query->select('*')
-			->from('talk_signaling')
+			->from('talk_internalsignaling')
 			->where($query->expr()->eq('recipient', $query->createNamedParameter($sessionId)))
 			->andWhere($query->expr()->lte('timestamp', $query->createNamedParameter($time)));
-		$result = $query->execute();
 
-		while ($row = $result->fetch()) {
-			$messages[] = ['type' => 'message', 'data' => $row['message']];
-		}
-		$result->closeCursor();
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('talk_internalsignaling')
+			->where($delete->expr()->eq('recipient', $delete->createNamedParameter($sessionId)))
+			->andWhere($delete->expr()->lte('timestamp', $delete->createNamedParameter($time)));
 
-		$query = $this->db->getQueryBuilder();
-		$query->delete('talk_signaling')
-			->where($query->expr()->eq('recipient', $query->createNamedParameter($sessionId)))
-			->andWhere($query->expr()->lte('timestamp', $query->createNamedParameter($time)));
-		$query->execute();
+		$this->atomic(function () use (&$messages, $query, $delete) {
+			$result = $query->executeQuery();
+
+			while ($row = $result->fetch()) {
+				$messages[] = ['type' => 'message', 'data' => $row['message']];
+			}
+			$result->closeCursor();
+
+			$delete->executeStatement();
+		}, $this->db);
 
 		return $messages;
 	}
@@ -139,9 +158,12 @@ class Messages {
 	public function expireOlderThan(int $olderThan): void {
 		$time = $this->timeFactory->getTime() - $olderThan;
 
-		$query = $this->db->getQueryBuilder();
-		$query->delete('talk_signaling')
-			->where($query->expr()->lt('timestamp', $query->createNamedParameter($time)));
-		$query->execute();
+		$delete = $this->db->getQueryBuilder();
+		$delete->delete('talk_internalsignaling')
+			->where($delete->expr()->lt('timestamp', $delete->createNamedParameter($time)));
+
+		$this->atomic(function () use ($delete) {
+			$delete->executeStatement();
+		}, $this->db);
 	}
 }

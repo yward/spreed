@@ -21,79 +21,103 @@
 -->
 
 <template>
-	<AppSidebar
-		v-show="opened"
+	<AppSidebar v-show="opened"
 		id="app-sidebar"
 		:title="title"
+		:title-tooltip="title"
 		:starred="isFavorited"
+		:active="activeTab"
 		:title-editable="canModerate && isRenamingConversation"
+		:class="'active-tab-' + activeTab"
+		@update:active="handleUpdateActive"
 		@update:starred="onFavoriteChange"
 		@update:title="handleUpdateTitle"
 		@submit-title="handleSubmitTitle"
 		@dismiss-editing="dismissEditing"
+		@closed="handleClosed"
 		@close="handleClose">
-		<AppSidebarTab
-			v-if="showChatInSidebar"
+		<template slot="description">
+			<LobbyStatus v-if="canFullModerate && hasLobbyEnabled" :token="token" />
+		</template>
+		<AppSidebarTab v-if="showChatInSidebar"
 			id="chat"
 			:order="1"
 			:name="t('spreed', 'Chat')"
 			icon="icon-comment">
-			<ChatView :token="token" />
+			<ChatView :is-visible="opened" />
+		</AppSidebarTab>
+		<AppSidebarTab v-if="getUserId && !isOneToOne"
+			id="participants"
+			ref="participantsTab"
+			:order="2"
+			:name="participantsText"
+			icon="icon-contacts-dark">
+			<ParticipantsTab :is-active="activeTab === 'participants'"
+				:can-search="canSearchParticipants"
+				:can-add="canAddParticipants" />
+		</AppSidebarTab>
+		<AppSidebarTab v-if="!getUserId || showSIPSettings"
+			id="details-tab"
+			:order="3"
+			:name="t('spreed', 'Details')"
+			icon="icon-details">
+			<SetGuestUsername v-if="!getUserId" />
+			<SipSettings v-if="showSIPSettings"
+				:meeting-id="conversation.token"
+				:attendee-pin="conversation.attendeePin" />
+			<div v-if="!getUserId" id="app-settings">
+				<div id="app-settings-header">
+					<Button type="tertiary" @click="showSettings">
+						<template #icon>
+							<CogIcon decorative
+								title=""
+								:size="20" />
+						</template>
+						{{ t('spreed', 'Settings') }}
+					</Button>
+				</div>
+			</div>
 		</AppSidebarTab>
 		<AppSidebarTab v-if="getUserId"
-			id="participants"
-			:order="2"
-			:name="t('spreed', 'Participants')"
-			icon="icon-contacts-dark">
-			<ParticipantsTab :display-search-box="displaySearchBox" />
-		</AppSidebarTab>
-		<AppSidebarTab
-			v-if="getUserId"
-			id="projects"
-			:order="3"
-			:name="t('spreed', 'Projects')"
-			icon="icon-projects">
-			<CollectionList v-if="conversation.token"
-				:id="conversation.token"
-				type="room"
-				:name="conversation.displayName" />
-		</AppSidebarTab>
-		<AppSidebarTab
-			v-if="!getUserId"
-			id="settings"
+			id="shared-items"
+			ref="sharedItemsTab"
 			:order="4"
-			:name="t('spreed', 'Settings')"
-			icon="icon-settings">
-			<SetGuestUsername />
+			icon="icon-folder-multiple-image"
+			:name="t('spreed', 'Shared items')">
+			<SharedItemsTab :active="activeTab === 'shared-items'" />
 		</AppSidebarTab>
 	</AppSidebar>
 </template>
 
 <script>
+import { emit } from '@nextcloud/event-bus'
 import AppSidebar from '@nextcloud/vue/dist/Components/AppSidebar'
 import AppSidebarTab from '@nextcloud/vue/dist/Components/AppSidebarTab'
+import SharedItemsTab from './SharedItems/SharedItemsTab'
 import ChatView from '../ChatView'
-import { CollectionList } from 'nextcloud-vue-collections'
 import BrowserStorage from '../../services/BrowserStorage'
 import { CONVERSATION, WEBINAR, PARTICIPANT } from '../../constants'
 import ParticipantsTab from './Participants/ParticipantsTab'
-import {
-	addToFavorites,
-	removeFromFavorites,
-	setConversationName,
-} from '../../services/conversationsService'
 import isInLobby from '../../mixins/isInLobby'
 import SetGuestUsername from '../SetGuestUsername'
+import SipSettings from './SipSettings'
+import LobbyStatus from './LobbyStatus'
+import Button from '@nextcloud/vue/dist/Components/Button'
+import CogIcon from 'vue-material-design-icons/Cog'
 
 export default {
 	name: 'RightSidebar',
 	components: {
 		AppSidebar,
 		AppSidebarTab,
+		SharedItemsTab,
 		ChatView,
-		CollectionList,
 		ParticipantsTab,
 		SetGuestUsername,
+		SipSettings,
+		LobbyStatus,
+		Button,
+		CogIcon,
 	},
 
 	mixins: [
@@ -109,6 +133,7 @@ export default {
 
 	data() {
 		return {
+			activeTab: 'participants',
 			contactsLoading: false,
 			// The conversation name (while editing)
 			conversationName: '',
@@ -128,18 +153,7 @@ export default {
 			return this.$store.getters.getToken()
 		},
 		conversation() {
-			if (this.$store.getters.conversation(this.token)) {
-				return this.$store.getters.conversation(this.token)
-			}
-			return {
-				token: '',
-				displayName: '',
-				isFavorite: false,
-				hasPassword: false,
-				type: CONVERSATION.TYPE.PUBLIC,
-				lobbyState: WEBINAR.LOBBY.NONE,
-				lobbyTimer: 0,
-			}
+			return this.$store.getters.conversation(this.token) || this.$store.getters.dummyConversation
 		},
 
 		getUserId() {
@@ -154,10 +168,12 @@ export default {
 			return this.conversation.isFavorite
 		},
 
-		displaySearchBox() {
-			return this.canFullModerate
-				&& (this.conversation.type === CONVERSATION.TYPE.GROUP
-					|| this.conversation.type === CONVERSATION.TYPE.PUBLIC)
+		canAddParticipants() {
+			return this.canFullModerate && this.canSearchParticipants
+		},
+		canSearchParticipants() {
+			return (this.conversation.type === CONVERSATION.TYPE.GROUP
+					|| (this.conversation.type === CONVERSATION.TYPE.PUBLIC && this.conversation.objectType !== 'share:password'))
 		},
 		isSearching() {
 			return this.searchText !== ''
@@ -171,12 +187,13 @@ export default {
 		},
 
 		canModerate() {
-			return this.conversation.type !== CONVERSATION.TYPE.ONE_TO_ONE && (this.canFullModerate || this.participantType === PARTICIPANT.TYPE.GUEST_MODERATOR)
+			return !this.isOneToOne && (this.canFullModerate || this.participantType === PARTICIPANT.TYPE.GUEST_MODERATOR)
 		},
 
 		/**
 		 * The conversation title value passed into the AppSidebar component.
-		 * @returns {string} The conversation's title.
+		 *
+		 * @return {string} The conversation's title.
 		 */
 		title() {
 			if (this.isRenamingConversation) {
@@ -185,14 +202,62 @@ export default {
 				return this.conversation.displayName
 			}
 		},
+
 		isRenamingConversation() {
 			return this.$store.getters.isRenamingConversation
 		},
+
+		showSIPSettings() {
+			return this.conversation.sipEnabled === WEBINAR.SIP.ENABLED
+				&& this.conversation.attendeePin
+		},
+
+		hasLobbyEnabled() {
+			return this.conversation.lobbyState === WEBINAR.LOBBY.NON_MODERATORS
+		},
+
+		isOneToOne() {
+			return this.conversation.type === CONVERSATION.TYPE.ONE_TO_ONE
+		},
+
+		participantsText() {
+			const participants = this.$store.getters.participantsList(this.token)
+			return t('spreed', 'Participants ({count})', { count: participants.length })
+		},
+
 	},
 
 	watch: {
-		conversation() {
-			this.conversationName = this.conversation.displayName
+		conversation(newConversation, oldConversation) {
+			if (!this.isRenamingConversation) {
+				this.conversationName = this.conversation.displayName
+			}
+
+			if (newConversation.token !== oldConversation.token) {
+				if (newConversation.type === CONVERSATION.TYPE.ONE_TO_ONE) {
+					this.activeTab = 'shared-items'
+				} else {
+					this.activeTab = 'participants'
+				}
+			}
+		},
+
+		showChatInSidebar(chatInSidebar) {
+			if (chatInSidebar) {
+				this.activeTab = 'chat'
+			} else if (this.activeTab === 'chat') {
+				if (this.conversation.type === CONVERSATION.TYPE.ONE_TO_ONE) {
+					this.activeTab = 'shared-items'
+				} else {
+					this.activeTab = 'participants'
+				}
+			}
+		},
+
+		token() {
+			if (this.$refs.participantsTab) {
+				this.$refs.participantsTab.$el.scrollTop = 0
+			}
 		},
 	},
 
@@ -204,17 +269,16 @@ export default {
 		},
 
 		async onFavoriteChange() {
-			if (this.conversation.isFavorite) {
-				await removeFromFavorites(this.conversation.token)
-			} else {
-				await addToFavorites(this.conversation.token)
-			}
+			this.$store.dispatch('toggleFavorite', this.conversation)
+		},
 
-			this.conversation.isFavorite = !this.conversation.isFavorite
+		handleUpdateActive(active) {
+			this.activeTab = active
 		},
 
 		/**
 		 * Updates the conversationName value while editing the conversation's title.
+		 *
 		 * @param {string} title the conversation title emitted by the AppSidevar vue
 		 * component.
 		 */
@@ -225,7 +289,10 @@ export default {
 		async handleSubmitTitle(event) {
 			const name = event.target[0].value.trim()
 			try {
-				await setConversationName(this.token, name)
+				await this.$store.dispatch('setConversationName', {
+					token: this.token,
+					name,
+				})
 				this.dismissEditing()
 			} catch (exception) {
 				console.debug(exception)
@@ -236,6 +303,13 @@ export default {
 			this.$store.dispatch('isRenamingConversation', false)
 		},
 
+		showSettings() {
+			emit('show-settings')
+		},
+
+		handleClosed() {
+			emit('files:sidebar:closed')
+		},
 	},
 }
 </script>
@@ -248,20 +322,14 @@ export default {
 	display: flex;
 }
 
-/* Force scroll bars in tabs content instead of in whole sidebar. */
-::v-deep .app-sidebar-tabs__content {
-	overflow: hidden;
-
-	section {
-		height: 100%;
-
-		overflow-y: auto;
-	}
+::v-deep .app-sidebar-header__description {
+	flex-direction: column;
 }
 
 .app-sidebar-tabs__content #tab-chat {
 	/* Remove padding to maximize the space for the chat view. */
 	padding: 0;
+	height: 100%;
 }
 
 </style>

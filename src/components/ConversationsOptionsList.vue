@@ -21,30 +21,28 @@
 
 <template>
 	<ul class="contacts-list">
-		<AppContentListItem
-			v-for="item of items"
+		<ListItem v-for="item of items"
 			:key="item.id"
 			:title="item.label"
 			@click="onClick(item)">
-			<template
-				v-slot:icon>
-				<ConversationIcon
-					:item="iconData(item)" />
+			<template #icon>
+				<ConversationIcon :item="iconData(item)"
+					:disable-menu="true" />
 			</template>
-		</AppContentListItem>
+		</ListItem>
 	</ul>
 </template>
 
 <script>
 import ConversationIcon from './ConversationIcon'
-import AppContentListItem from './LeftSidebar/ConversationsList/AppContentListItem/AppContentListItem'
+import ListItem from '@nextcloud/vue/dist/Components/ListItem'
 import { CONVERSATION } from '../constants'
 
 export default {
 	name: 'ConversationsOptionsList',
 	components: {
 		ConversationIcon,
-		AppContentListItem,
+		ListItem,
 	},
 	props: {
 		items: {

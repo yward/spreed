@@ -28,9 +28,12 @@ use OCA\Talk\Events\JoinRoomGuestEvent;
 use OCA\Talk\Events\JoinRoomUserEvent;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Exceptions\UnauthorizedException;
+use OCA\Talk\Model\Attendee;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
 use OCA\Talk\TalkSession;
 use OCP\EventDispatcher\IEventDispatcher;
+use OCP\IUserManager;
 
 /**
  * Custom behaviour for rooms for files.
@@ -49,22 +52,25 @@ use OCP\EventDispatcher\IEventDispatcher;
  * events.
  */
 class Listener {
-
-	/** @var Util */
-	protected $util;
-	/** @var TalkSession */
-	protected $talkSession;
+	protected Util $util;
+	protected ParticipantService $participantService;
+	protected IUserManager $userManager;
+	protected TalkSession $talkSession;
 
 	public function __construct(Util $util,
+								ParticipantService $participantService,
+								IUserManager $userManager,
 								TalkSession $talkSession) {
 		$this->util = $util;
+		$this->participantService = $participantService;
+		$this->userManager = $userManager;
 		$this->talkSession = $talkSession;
 	}
 
 	public static function register(IEventDispatcher $dispatcher): void {
-		$listener = static function (JoinRoomUserEvent $event) {
+		$listener = static function (JoinRoomUserEvent $event): void {
 			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
+			$listener = \OC::$server->get(self::class);
 
 			try {
 				$listener->preventUsersWithoutAccessToTheFileFromJoining($event->getRoom(), $event->getUser()->getUID());
@@ -75,9 +81,9 @@ class Listener {
 		};
 		$dispatcher->addListener(Room::EVENT_BEFORE_ROOM_CONNECT, $listener);
 
-		$listener = static function (JoinRoomGuestEvent $event) {
+		$listener = static function (JoinRoomGuestEvent $event): void {
 			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
+			$listener = \OC::$server->get(self::class);
 
 			try {
 				$listener->preventGuestsFromJoiningIfNotPubliclyAccessible($event->getRoom());
@@ -115,12 +121,9 @@ class Listener {
 			return;
 		}
 
-		$share = $this->util->getAnyPublicShareOfFileOwnedByUserOrAnyDirectShareOfFileAccessibleByUser($room->getObjectId(), $userId);
-		if (!$share) {
-			$groupFolder = $this->util->getGroupFolderNode($room->getObjectId(), $userId);
-			if (!$groupFolder) {
-				throw new UnauthorizedException('User does not have access to the file');
-			}
+		$node = $this->util->getAnyNodeOfFileAccessibleByUser($room->getObjectId(), $userId);
+		if ($node === null) {
+			throw new UnauthorizedException('User does not have access to the file');
 		}
 	}
 
@@ -141,14 +144,20 @@ class Listener {
 			return;
 		}
 
-		if (!$this->util->getAnyPublicShareOfFileOwnedByUserOrAnyDirectShareOfFileAccessibleByUser($room->getObjectId(), $userId)) {
+		if ($this->util->getAnyNodeOfFileAccessibleByUser($room->getObjectId(), $userId) === null) {
 			return;
 		}
 
 		try {
-			$room->getParticipant($userId);
+			$room->getParticipant($userId, false);
 		} catch (ParticipantNotFoundException $e) {
-			$room->addUsers(['userId' => $userId]);
+			$user = $this->userManager->get($userId);
+
+			$this->participantService->addUsers($room, [[
+				'actorType' => Attendee::ACTOR_USERS,
+				'actorId' => $userId,
+				'displayName' => $user ? $user->getDisplayName() : $userId,
+			]]);
 		}
 	}
 

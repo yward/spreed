@@ -21,21 +21,15 @@
 
 <template>
 	<div class="video-backgroundbackground">
-		<div class="darken" />
-		<img
-			v-if="hasPicture"
-			:src="backgroundImage"
-			class="video-background__picture"
-			alt="">
-		<div v-else
-			:style="{'background-color': backgroundColor }"
+		<div :style="{'background-color': backgroundColor }"
 			class="video-background" />
+		<div ref="darkener"
+			class="darken" />
 	</div>
 </template>
 
 <script>
-import axios from '@nextcloud/axios'
-import { generateUrl } from '@nextcloud/router'
+import usernameToColor from '@nextcloud/vue/dist/Functions/usernameToColor'
 
 export default {
 	name: 'VideoBackground',
@@ -51,44 +45,17 @@ export default {
 		},
 	},
 
-	data() {
-		return {
-			hasPicture: false,
-		}
-	},
-
 	computed: {
 		backgroundColor() {
 			// If the prop is empty. We're not checking for the default value
 			// because the user's displayName might be '?'
 			if (!this.displayName) {
-				return `var(--color-text-maxcontrast)`
+				return 'var(--color-text-maxcontrast)'
 			} else {
-				const color = this.displayName.toRgb()
+				const color = usernameToColor(this.displayName)
 				return `rgb(${color.r}, ${color.g}, ${color.b})`
 			}
 		},
-		backgroundImage() {
-			return generateUrl(`avatar/${this.user}/300`)
-		},
-	},
-
-	async beforeMount() {
-		if (!this.user) {
-			return
-		}
-
-		try {
-			const response = await axios.get(generateUrl(`avatar/${this.user}/300`))
-			if (response.headers[`x-nc-iscustomavatar`] === '1') {
-				this.hasPicture = true
-			}
-		} catch (exception) {
-			console.debug(exception)
-		}
-	},
-
-	methods: {
 	},
 }
 </script>
@@ -101,7 +68,6 @@ export default {
 	height: 100%;
 	width: 100%;
 	&__picture {
-		filter: blur(20px);
 		/* Make pic to at least 100% wide and tall */
 		min-width: 105%;
 		min-height: 105%;
@@ -114,7 +80,7 @@ export default {
 		position: absolute;
 		top: 50%;
 		left: 50%;
-		transform: translate(-50%,-50%)
+		transform: translate(-50%,-50%);
 	}
 
 	h3 {

@@ -1,15 +1,21 @@
 /**
  * @copyright Copyright (c) 2019 Daniel Calviño Sánchez <danxuliu@gmail.com>
+ *
  * @copyright Copyright (c) 2019 Ivan Sein <ivan@nextcloud.com>
+ *
  * @copyright Copyright (c) 2019 Joachim Bauch <bauch@struktur.de>
+ *
  * @copyright Copyright (c) 2019 Joas Schilling <coding@schilljs.com>
  *
  * @author Daniel Calviño Sánchez <danxuliu@gmail.com>
+ *
  * @author Ivan Sein <ivan@nextcloud.com>
+ *
  * @author Joachim Bauch <bauch@struktur.de>
+ *
  * @author Joas Schilling <coding@schilljs.com>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -31,10 +37,14 @@ import { rejoinConversation } from '../services/participantsService'
 import CancelableRequest from './cancelableRequest'
 import { EventBus } from '../services/EventBus'
 import axios from '@nextcloud/axios'
-import { generateOcsUrl, generateUrl } from '@nextcloud/router'
+import {
+	generateOcsUrl,
+	generateUrl,
+} from '@nextcloud/router'
 import {
 	showError,
 	showWarning,
+	TOAST_PERMANENT_TIMEOUT,
 } from '@nextcloud/dialogs'
 
 const Signaling = {
@@ -45,8 +55,8 @@ const Signaling = {
 	/**
 	 * Creates a connection to the signaling server
 	 *
-	 * @param {Object} settings The signaling settings
-	 * @returns {Standalone|Internal}
+	 * @param {object} settings The signaling settings
+	 * @return {Standalone|Internal}
 	 */
 	createConnection(settings) {
 		if (!settings) {
@@ -61,6 +71,9 @@ const Signaling = {
 	},
 }
 
+/**
+ * @param {object} settings The signaling settings
+ */
 function Base(settings) {
 	this.settings = settings
 	this.sessionId = ''
@@ -78,7 +91,7 @@ function Base(settings) {
 
 Signaling.Base = Base
 Signaling.Base.prototype.on = function(ev, handler) {
-	if (!this.handlers.hasOwnProperty(ev)) {
+	if (!Object.prototype.hasOwnProperty.call(this.handlers, ev)) {
 		this.handlers[ev] = [handler]
 	} else {
 		this.handlers[ev].push(handler)
@@ -97,7 +110,7 @@ Signaling.Base.prototype.on = function(ev, handler) {
 }
 
 Signaling.Base.prototype.off = function(ev, handler) {
-	if (!this.handlers.hasOwnProperty(ev)) {
+	if (!Object.prototype.hasOwnProperty.call(this.handlers, ev)) {
 		return
 	}
 
@@ -119,7 +132,12 @@ Signaling.Base.prototype._trigger = function(ev, args) {
 		}
 	}
 
-	EventBus.$emit('Signaling::' + ev, args)
+	// Convert webrtc event names to kebab-case for "vue/custom-event-name-casing"
+	const kebabCase = string => string
+		.replace(/([a-z])([A-Z])/g, '$1-$2')
+		.replace(/[\s_]+/g, '-')
+		.toLowerCase()
+	EventBus.$emit('signaling-' + kebabCase(ev), args)
 }
 
 Signaling.Base.prototype.isNoMcuWarningEnabled = function() {
@@ -170,6 +188,16 @@ Signaling.Base.prototype.leaveCurrentRoom = function() {
 		this.currentRoomToken = null
 		this.nextcloudSessionId = null
 	}
+}
+
+Signaling.Base.prototype.updateCurrentCallFlags = function(flags) {
+	return new Promise((resolve, reject) => {
+		if (this.currentCallToken) {
+			this.updateCallFlags(this.currentCallToken, flags).then(() => { resolve() }).catch(reason => { reject(reason) })
+		} else {
+			resolve()
+		}
+	})
 }
 
 Signaling.Base.prototype.leaveCurrentCall = function() {
@@ -238,8 +266,10 @@ Signaling.Base.prototype._joinCallSuccess = function(/* token */) {
 
 Signaling.Base.prototype.joinCall = function(token, flags) {
 	return new Promise((resolve, reject) => {
-		axios.post(generateOcsUrl('apps/spreed/api/v1/call', 2) + token, {
-			flags: flags,
+		this._trigger('beforeJoinCall', [token])
+
+		axios.post(generateOcsUrl('apps/spreed/api/v4/call/{token}', { token }), {
+			flags,
 		})
 			.then(function() {
 				this.currentCallToken = token
@@ -262,14 +292,41 @@ Signaling.Base.prototype._leaveCallSuccess = function(/* token */) {
 	// Override in subclasses if necessary.
 }
 
-Signaling.Base.prototype.leaveCall = function(token, keepToken) {
+Signaling.Base.prototype.updateCallFlags = function(token, flags) {
 	return new Promise((resolve, reject) => {
 		if (!token) {
 			reject(new Error())
 			return
 		}
 
-		axios.delete(generateOcsUrl('apps/spreed/api/v1/call', 2) + token)
+		axios.put(generateOcsUrl('apps/spreed/api/v4/call/{token}', { token }), {
+			flags,
+		})
+			.then(function() {
+				this.currentCallFlags = flags
+				this._trigger('updateCallFlags', [token, flags])
+				resolve()
+			}.bind(this))
+			.catch(function() {
+				reject(new Error())
+			})
+	})
+}
+
+Signaling.Base.prototype.leaveCall = function(token, keepToken, all = false) {
+	return new Promise((resolve, reject) => {
+		if (!token) {
+			reject(new Error())
+			return
+		}
+
+		this._trigger('beforeLeaveCall', [token, keepToken])
+
+		axios.delete(generateOcsUrl('apps/spreed/api/v4/call/{token}', { token }), {
+			data: {
+				all,
+			},
+		})
 			.then(function() {
 				this._trigger('leaveCall', [token, keepToken])
 				this._leaveCallSuccess(token)
@@ -287,11 +344,15 @@ Signaling.Base.prototype.leaveCall = function(token, keepToken) {
 }
 
 // Connection to the internal signaling server provided by the app.
+/**
+ * @param {object} settings The signaling settings
+ */
 function Internal(settings) {
 	Signaling.Base.prototype.constructor.apply(this, arguments)
 	this.hideWarning = settings.hideWarning
 	this.spreedArrayConnection = []
 
+	this.pullMessageErrorToast = null
 	this.pullMessagesFails = 0
 	this.pullMessagesRequest = null
 
@@ -299,6 +360,8 @@ function Internal(settings) {
 	this.sendInterval = window.setInterval(function() {
 		this.sendPendingMessages()
 	}.bind(this), 500)
+
+	this._joinCallAgainOnceDisconnected = false
 }
 
 Internal.prototype = new Signaling.Base()
@@ -337,13 +400,14 @@ Signaling.Internal.prototype.forceReconnect = function(newSession, flags) {
 
 	// FIXME Naive reconnection routine; as the same session is kept peers
 	// must be explicitly ended before the reconnection is forced.
-	this.leaveCall(this.currentCallToken, true)
-	this.joinCall(this.currentCallToken)
+	this.leaveCall(this.currentCallToken, true).then(() => {
+		this._joinCallAgainOnceDisconnected = true
+	})
 }
 
 Signaling.Internal.prototype._sendMessageWithCallback = function(ev) {
 	const message = [{
-		ev: ev,
+		ev,
 	}]
 
 	this._sendMessages(message)
@@ -352,24 +416,25 @@ Signaling.Internal.prototype._sendMessageWithCallback = function(ev) {
 		}.bind(this))
 		.catch(function(err) {
 			console.error(err)
-			showError(t('spreed', 'Sending signaling message has failed.'), {
-				timeout: 15,
-			})
+			showError(t('spreed', 'Sending signaling message has failed.'))
 		})
 }
 
 Signaling.Internal.prototype._sendMessages = function(messages) {
-	return axios.post(generateOcsUrl('apps/spreed/api/v1/signaling', 2) + this.currentRoomToken, {
+	return axios.post(generateOcsUrl('apps/spreed/api/v3/signaling/{token}', { token: this.currentRoomToken }), {
 		messages: JSON.stringify(messages),
 	})
 }
 
 Signaling.Internal.prototype._joinRoomSuccess = function(token, sessionId) {
+	this._joinCallAgainOnceDisconnected = false
+
 	this.sessionId = sessionId
 	this._startPullingMessages()
 }
 
 Signaling.Internal.prototype._doLeaveRoom = function(token) {
+	this._joinCallAgainOnceDisconnected = false
 }
 
 Signaling.Internal.prototype.sendCallMessage = function(data) {
@@ -386,8 +451,8 @@ Signaling.Internal.prototype.sendCallMessage = function(data) {
 }
 
 /**
-	 * @private
-	 */
+ * @private
+ */
 Signaling.Internal.prototype._startPullingMessages = function() {
 	const token = this.currentRoomToken
 	if (!token) {
@@ -405,12 +470,26 @@ Signaling.Internal.prototype._startPullingMessages = function() {
 	request(token)
 		.then(function(result) {
 			this.pullMessagesFails = 0
+			if (this.pullMessageErrorToast) {
+				this.pullMessageErrorToast.hideToast()
+				this.pullMessageErrorToast = null
+			}
+
 			result.data.ocs.data.forEach(message => {
+				let localParticipant
+
 				this._trigger('onBeforeReceiveMessage', [message])
 				switch (message.type) {
 				case 'usersInRoom':
 					this._trigger('usersInRoom', [message.data])
 					this._trigger('participantListChanged')
+
+					localParticipant = message.data.find(participant => participant.sessionId === this.sessionId)
+					if (this._joinCallAgainOnceDisconnected && !localParticipant.inCall) {
+						this._joinCallAgainOnceDisconnected = false
+						this.joinCall(this.currentCallToken, this.currentCallFlags)
+					}
+
 					break
 				case 'message':
 					if (typeof (message.data) === 'string') {
@@ -431,30 +510,46 @@ Signaling.Internal.prototype._startPullingMessages = function() {
 				// User navigated away in the meantime. Ignore
 			} else if (axios.isCancel(error)) {
 				console.debug('Pulling messages request was cancelled')
-			} else if (error.response && (error.response.status === 404 || error.response.status === 403)) {
-				console.error('Stop pulling messages because room does not exist or is not accessible')
+			} else if (error?.response?.status === 409) {
+				// Participant joined a second time and this session was killed
+				console.error('Session was killed but the conversation still exists')
 				this._trigger('pullMessagesStoppedOnFail')
+
+				EventBus.$emit('duplicate-session-detected')
+			} else if (error?.response?.status === 404 || error?.response?.status === 403) {
+				// Conversation was deleted or the user was removed
+				console.error('Conversation was not found anymore')
+				EventBus.$emit('deleted-session-detected')
 			} else if (token) {
-				if (this.pullMessagesFails >= 3) {
-					console.error('Stop pulling messages after repeated failures')
+				if (this.pullMessagesFails === 1) {
+					this.pullMessageErrorToast = showError(t('spreed', 'Lost connection to signaling server. Trying to reconnect.'), {
+						timeout: TOAST_PERMANENT_TIMEOUT,
+					})
+				}
+				if (this.pullMessagesFails === 30) {
+					if (this.pullMessageErrorToast) {
+						this.pullMessageErrorToast.hideToast()
+					}
 
-					this._trigger('pullMessagesStoppedOnFail')
-
+					// Giving up after 5 minutes
+					this.pullMessageErrorToast = showError(t('spreed', 'Lost connection to signaling server. Try to reload the page manually.'), {
+						timeout: TOAST_PERMANENT_TIMEOUT,
+					})
 					return
 				}
 
 				this.pullMessagesFails++
-				// Retry to pull messages after 5 seconds
+				// Retry to pull messages after 10 seconds
 				window.setTimeout(function() {
 					this._startPullingMessages()
-				}.bind(this), 5000)
+				}.bind(this), 10000)
 			}
 		}.bind(this))
 }
 
 /**
-	 * @private
-	 */
+ * @private
+ */
 Signaling.Internal.prototype.sendPendingMessages = function() {
 	if (!this.spreedArrayConnection.length || this.isSendingMessages) {
 		return
@@ -472,6 +567,10 @@ Signaling.Internal.prototype.sendPendingMessages = function() {
 	}.bind(this))
 }
 
+/**
+ * @param {object} settings The signaling settings
+ * @param {string|string[]} urls The url of the signaling server
+ */
 function Standalone(settings, urls) {
 	Signaling.Base.prototype.constructor.apply(this, arguments)
 	if (typeof (urls) === 'string') {
@@ -482,18 +581,20 @@ function Standalone(settings, urls) {
 	// TODO(jojo): Try other server if connection fails.
 	let url = urls[idx]
 	// Make sure we are using websocket urls.
-	if (url.indexOf('https://') === 0) {
-		url = 'wss://' + url.substr(8)
-	} else if (url.indexOf('http://') === 0) {
-		url = 'ws://' + url.substr(7)
+	if (url.startsWith('https://')) {
+		url = 'wss://' + url.slice(8)
+	} else if (url.startsWith('http://')) {
+		url = 'ws://' + url.slice(7)
 	}
-	if (url[url.length - 1] === '/') {
-		url = url.substr(0, url.length - 1)
+	if (url.endsWith('/')) {
+		url = url.slice(0, -1)
 	}
 	this.url = url + '/spreed'
 	this.initialReconnectIntervalMs = 1000
 	this.maxReconnectIntervalMs = 16000
 	this.reconnectIntervalMs = this.initialReconnectIntervalMs
+	this.helloResponseErrorCount = 0
+	this.ownSessionJoined = false
 	this.joinedUsers = {}
 	this.rooms = []
 	this.connect()
@@ -532,7 +633,7 @@ Signaling.Standalone.prototype.connect = function() {
 		&& this.signalingConnectionWarning === null) {
 		this.signalingConnectionTimeout = setTimeout(() => {
 			this.signalingConnectionWarning = showWarning(t('spreed', 'Establishing signaling connection is taking longer than expected …'), {
-				timeout: 0,
+				timeout: TOAST_PERMANENT_TIMEOUT,
 			})
 		}, 2000)
 	}
@@ -543,6 +644,7 @@ Signaling.Standalone.prototype.connect = function() {
 	this.pendingMessages = []
 	this.connected = false
 	this._forceReconnect = false
+	this._isRejoiningConversationWithNewSession = false
 	this.socket = new WebSocket(this.url)
 	window.signalingSocket = this.socket
 	this.socket.onopen = function(event) {
@@ -554,10 +656,6 @@ Signaling.Standalone.prototype.connect = function() {
 		if (this.signalingConnectionWarning !== null) {
 			this.signalingConnectionWarning.hideToast()
 			this.signalingConnectionWarning = null
-		}
-		if (this.signalingConnectionError !== null) {
-			this.signalingConnectionError.hideToast()
-			this.signalingConnectionError = null
 		}
 		this.reconnectIntervalMs = this.initialReconnectIntervalMs
 		this.sendHello()
@@ -574,7 +672,7 @@ Signaling.Standalone.prototype.connect = function() {
 		}
 		if (this.signalingConnectionError === null) {
 			this.signalingConnectionError = showError(t('spreed', 'Failed to establish signaling connection. Retrying …'), {
-				timeout: 0,
+				timeout: TOAST_PERMANENT_TIMEOUT,
 			})
 		}
 		this.reconnect()
@@ -603,9 +701,11 @@ Signaling.Standalone.prototype.connect = function() {
 		if (typeof (data) === 'string') {
 			data = JSON.parse(data)
 		}
-		console.debug('Received', data)
+		if (OC.debug) {
+			console.debug('Received', data)
+		}
 		const id = data.id
-		if (id && this.callbacks.hasOwnProperty(id)) {
+		if (id && Object.prototype.hasOwnProperty.call(this.callbacks, id)) {
 			const cb = this.callbacks[id]
 			delete this.callbacks[id]
 			cb(data)
@@ -627,7 +727,7 @@ Signaling.Standalone.prototype.connect = function() {
 				this.nextcloudSessionId = null
 			} else {
 				// TODO(fancycode): Only fetch properties of room that was modified.
-				EventBus.$emit('shouldRefreshConversations')
+				EventBus.$emit('should-refresh-conversations')
 			}
 			break
 		case 'event':
@@ -643,6 +743,13 @@ Signaling.Standalone.prototype.connect = function() {
 			message.from = data.control.sender.sessionid
 			this._trigger('message', [message])
 			break
+		case 'error':
+			if (data.error.code === 'processing_failed') {
+				console.error('An error occurred processing the signaling message, please ask your server administrator to check the log file')
+			} else {
+				console.error('Ignore unknown error', data)
+			}
+			break
 		default:
 			if (!id) {
 				console.error('Ignore unknown event', data)
@@ -656,8 +763,8 @@ Signaling.Standalone.prototype.connect = function() {
 Signaling.Standalone.prototype.sendBye = function() {
 	if (this.connected) {
 		this.doSend({
-			'type': 'bye',
-			'bye': {},
+			type: 'bye',
+			bye: {},
 		})
 	}
 	this.resumeId = null
@@ -697,6 +804,8 @@ Signaling.Standalone.prototype.forceReconnect = function(newSession, flags) {
 			this.leaveCall(this.currentCallToken, true)
 		}
 
+		this._isRejoiningConversationWithNewSession = true
+
 		rejoinConversation(this.currentRoomToken)
 			.then(response => {
 				this.nextcloudSessionId = response.data.ocs.data.sessionId
@@ -716,13 +825,13 @@ Signaling.Standalone.prototype.forceReconnect = function(newSession, flags) {
 Signaling.Standalone.prototype.sendCallMessage = function(data) {
 	if (data.type === 'control') {
 		this.doSend({
-			'type': 'control',
-			'control': {
-				'recipient': {
-					'type': 'session',
-					'sessionid': data.to,
+			type: 'control',
+			control: {
+				recipient: {
+					type: 'session',
+					sessionid: data.to,
 				},
-				'data': data.payload,
+				data: data.payload,
 			},
 		})
 
@@ -730,13 +839,13 @@ Signaling.Standalone.prototype.sendCallMessage = function(data) {
 	}
 
 	this.doSend({
-		'type': 'message',
-		'message': {
-			'recipient': {
-				'type': 'session',
-				'sessionid': data.to,
+		type: 'message',
+		message: {
+			recipient: {
+				type: 'session',
+				sessionid: data.to,
 			},
-			'data': data,
+			data,
 		},
 	})
 }
@@ -748,12 +857,12 @@ Signaling.Standalone.prototype.sendRoomMessage = function(data) {
 	}
 
 	this.doSend({
-		'type': 'message',
-		'message': {
-			'recipient': {
-				'type': 'room',
+		type: 'message',
+		message: {
+			recipient: {
+				type: 'room',
 			},
-			'data': data,
+			data,
 		},
 	})
 }
@@ -769,9 +878,11 @@ Signaling.Standalone.prototype.doSend = function(msg, callback) {
 	if (callback) {
 		const id = this.id++
 		this.callbacks[id] = callback
-		msg['id'] = '' + id
+		msg.id = '' + id
 	}
-	console.debug('Sending', msg)
+	if (OC.debug) {
+		console.debug('Sending', msg)
+	}
 	this.socket.send(JSON.stringify(msg))
 }
 
@@ -780,25 +891,25 @@ Signaling.Standalone.prototype.sendHello = function() {
 	if (this.resumeId) {
 		console.debug('Trying to resume session', this.sessionId)
 		msg = {
-			'type': 'hello',
-			'hello': {
-				'version': '1.0',
-				'resumeid': this.resumeId,
+			type: 'hello',
+			hello: {
+				version: '1.0',
+				resumeid: this.resumeId,
 			},
 		}
 	} else {
 		// Already reconnected with a new session.
 		this._forceReconnect = false
-		const url = generateOcsUrl('apps/spreed/api/v1/signaling', 2) + 'backend'
+		const url = generateOcsUrl('apps/spreed/api/v3/signaling/backend')
 		msg = {
-			'type': 'hello',
-			'hello': {
-				'version': '1.0',
-				'auth': {
-					'url': url,
-					'params': {
-						'userid': this.settings.userId,
-						'ticket': this.settings.ticket,
+			type: 'hello',
+			hello: {
+				version: '1.0',
+				auth: {
+					url,
+					params: {
+						userid: this.settings.userId,
+						ticket: this.settings.ticket,
 					},
 				},
 			},
@@ -817,10 +928,35 @@ Signaling.Standalone.prototype.helloResponseReceived = function(data) {
 			return
 		}
 
+		this.helloResponseErrorCount++
+
+		if (this.signalingConnectionError === null && this.helloResponseErrorCount < 5) {
+			this.signalingConnectionError = showError(t('spreed', 'Failed to establish signaling connection. Retrying …'), {
+				timeout: TOAST_PERMANENT_TIMEOUT,
+			})
+		} else if (this.helloResponseErrorCount === 5) {
+			// Switch to a different message as several errors in a row in hello
+			// responses indicate that the signaling server might be unable to
+			// connect to Nextcloud.
+			if (this.signalingConnectionError) {
+				this.signalingConnectionError.hideToast()
+			}
+			this.signalingConnectionError = showError(t('spreed', 'Failed to establish signaling connection. Something might be wrong in the signaling server configuration'), {
+				timeout: TOAST_PERMANENT_TIMEOUT,
+			})
+		}
+
 		// TODO(fancycode): How should this be handled better?
 		console.error('Could not connect to server', data)
 		this.reconnect()
 		return
+	}
+
+	this.helloResponseErrorCount = 0
+
+	if (this.signalingConnectionError !== null) {
+		this.signalingConnectionError.hideToast()
+		this.signalingConnectionError = null
 	}
 
 	const resumedSession = !!this.resumeId
@@ -841,6 +977,16 @@ Signaling.Standalone.prototype.helloResponseReceived = function(data) {
 		}
 	}
 
+	if (!this.hasFeature('audio-video-permissions')) {
+		showError(
+			t('spreed', 'The configured signaling server needs to be updated to be compatible with this version of Talk. Please contact your administrator.'),
+			{
+				timeout: TOAST_PERMANENT_TIMEOUT,
+			}
+		)
+		console.error('The configured signaling server needs to be updated to be compatible with this version of Talk. Please contact your administrator.')
+	}
+
 	const messages = this.pendingMessages
 	this.pendingMessages = []
 	for (i = 0; i < messages.length; i++) {
@@ -856,6 +1002,8 @@ Signaling.Standalone.prototype.helloResponseReceived = function(data) {
 }
 
 Signaling.Standalone.prototype.joinRoom = function(token, sessionId) {
+	this.ownSessionJoined = false
+
 	if (!this.sessionId) {
 		if (this._pendingJoinRoomPromise && this._pendingJoinRoomPromise.token === token) {
 			return this._pendingJoinRoomPromise
@@ -914,13 +1062,13 @@ Signaling.Standalone.prototype._joinRoomSuccess = function(token, nextcloudSessi
 
 	console.debug('Join room', token)
 	this.doSend({
-		'type': 'room',
-		'room': {
-			'roomid': token,
+		type: 'room',
+		room: {
+			roomid: token,
 			// Pass the Nextcloud session id to the signaling server. The
 			// session id will be passed through to Nextcloud to check if
 			// the (Nextcloud) user is allowed to join the room.
-			'sessionid': nextcloudSessionId,
+			sessionid: nextcloudSessionId,
 		},
 	}, function(data) {
 		this.joinResponseReceived(data, token)
@@ -939,10 +1087,10 @@ Signaling.Standalone.prototype.joinCall = function(token, flags) {
 
 		const promise = new Promise((resolve, reject) => {
 			this.pendingJoinCall = {
-				token: token,
-				flags: flags,
-				resolve: resolve,
-				reject: reject,
+				token,
+				flags,
+				resolve,
+				reject,
 			}
 		})
 
@@ -984,9 +1132,9 @@ Signaling.Standalone.prototype.joinResponseReceived = function(data, token) {
 Signaling.Standalone.prototype._doLeaveRoom = function(token) {
 	console.debug('Leave room', token)
 	this.doSend({
-		'type': 'room',
-		'room': {
-			'roomid': '',
+		type: 'room',
+		room: {
+			roomid: '',
 		},
 	}, function(data) {
 		console.debug('Left', data)
@@ -1033,16 +1181,38 @@ Signaling.Standalone.prototype.processRoomEvent = function(data) {
 				// may now no longer exist.
 				leftUsers = Object.assign({}, this.joinedUsers)
 			}
+
+			let userListIsDirty = false
 			for (i = 0; i < joinedUsers.length; i++) {
 				this.joinedUsers[joinedUsers[i].sessionid] = true
 				delete leftUsers[joinedUsers[i].sessionid]
+
+				if (this.settings.userId && joinedUsers[i].userid === this.settings.userId) {
+					if (joinedUsers[i].sessionid === this.sessionId) {
+						// We are ignoring joins before we found our own message,
+						// as otherwise you get the warning for your own old session immediately
+						this.ownSessionJoined = true
+					}
+				} else {
+					userListIsDirty = true
+				}
 			}
 			leftUsers = Object.keys(leftUsers)
 			if (leftUsers.length) {
 				this._trigger('usersLeft', [leftUsers])
+
+				for (i = 0; i < leftUsers.length; i++) {
+					delete this.joinedUsers[leftUsers[i]]
+
+					if (!this.settings.userId || leftUsers[i].userid !== this.settings.userId) {
+						userListIsDirty = true
+					}
+				}
 			}
 			this._trigger('usersJoined', [joinedUsers])
-			this._trigger('participantListChanged')
+			if (userListIsDirty) {
+				this._trigger('participantListChanged')
+			}
 		}
 		break
 	case 'leave':
@@ -1069,7 +1239,7 @@ Signaling.Standalone.prototype.processRoomMessageEvent = function(data) {
 	switch (data.type) {
 	case 'chat':
 		// FIXME this is not listened to
-		EventBus.$emit('shouldRefreshChatMessages')
+		EventBus.$emit('should-refresh-chat-messages')
 		break
 	default:
 		console.error('Unknown room message event', data)
@@ -1077,8 +1247,34 @@ Signaling.Standalone.prototype.processRoomMessageEvent = function(data) {
 }
 
 Signaling.Standalone.prototype.processRoomListEvent = function(data) {
-	console.debug('Room list event', data)
-	EventBus.$emit('shouldRefreshConversations')
+	switch (data.event.type) {
+	case 'update':
+		if (data.event.update.properties['participant-list']) {
+			console.debug('Room list event for participant list', data)
+			if (data.event.update.roomid === this.currentRoomToken) {
+				this._trigger('participantListChanged')
+			} else {
+				// Participant list in another room changed, we don't really care
+			}
+			break
+		}
+		// eslint-disable-next-line no-fallthrough
+	case 'disinvite':
+		if (data.event?.disinvite?.roomid === this.currentRoomToken) {
+			if (this._isRejoiningConversationWithNewSession) {
+				console.debug('Rejoining conversation with new session, "disinvite" message ignored')
+				return
+			}
+			console.error('User or session was removed from the conversation, redirecting')
+			EventBus.$emit('deleted-session-detected')
+			break
+		}
+		// eslint-disable-next-line no-fallthrough
+	default:
+		console.debug('Room list event', data)
+		EventBus.$emit('should-refresh-conversations')
+		break
+	}
 }
 
 Signaling.Standalone.prototype.processRoomParticipantsEvent = function(data) {
@@ -1087,13 +1283,16 @@ Signaling.Standalone.prototype.processRoomParticipantsEvent = function(data) {
 		this._trigger('usersChanged', [data.event.update.users || []])
 		this._trigger('participantListChanged')
 		break
+	case 'flags':
+		this._trigger('participantFlagsChanged', [data.event.flags || []])
+		break
 	default:
 		console.error('Unknown room participant event', data)
 		break
 	}
 }
 
-Signaling.Standalone.prototype.requestOffer = function(sessionid, roomType) {
+Signaling.Standalone.prototype.requestOffer = function(sessionid, roomType, sid = undefined) {
 	if (!this.hasFeature('mcu')) {
 		console.warn("Can't request an offer without a MCU.")
 		return
@@ -1103,17 +1302,18 @@ Signaling.Standalone.prototype.requestOffer = function(sessionid, roomType) {
 		// Got a user object.
 		sessionid = sessionid.sessionId || sessionid.sessionid
 	}
-	console.debug('Request offer from', sessionid)
+	console.debug('Request offer from', sessionid, sid)
 	this.doSend({
-		'type': 'message',
-		'message': {
-			'recipient': {
-				'type': 'session',
-				'sessionid': sessionid,
+		type: 'message',
+		message: {
+			recipient: {
+				type: 'session',
+				sessionid,
 			},
-			'data': {
-				'type': 'requestoffer',
-				'roomType': roomType,
+			data: {
+				type: 'requestoffer',
+				roomType,
+				sid,
 			},
 		},
 	})
@@ -1134,15 +1334,15 @@ Signaling.Standalone.prototype.sendOffer = function(sessionid, roomType) {
 	}
 	console.debug('Send offer to', sessionid)
 	this.doSend({
-		'type': 'message',
-		'message': {
-			'recipient': {
-				'type': 'session',
-				'sessionid': sessionid,
+		type: 'message',
+		message: {
+			recipient: {
+				type: 'session',
+				sessionid,
 			},
-			'data': {
-				'type': 'sendoffer',
-				'roomType': roomType,
+			data: {
+				type: 'sendoffer',
+				roomType,
 			},
 		},
 	})

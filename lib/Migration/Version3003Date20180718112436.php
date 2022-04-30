@@ -24,7 +24,7 @@ declare(strict_types=1);
  */
 namespace OCA\Talk\Migration;
 
-use Doctrine\DBAL\Types\Type;
+use Doctrine\DBAL\Types\Types;
 use OCP\DB\ISchemaWrapper;
 use OCP\DB\QueryBuilder\IQueryBuilder;
 use OCP\IDBConnection;
@@ -32,9 +32,7 @@ use OCP\Migration\SimpleMigrationStep;
 use OCP\Migration\IOutput;
 
 class Version3003Date20180718112436 extends SimpleMigrationStep {
-
-	/** @var IDBConnection */
-	protected $connection;
+	protected IDBConnection $connection;
 
 	public function __construct(IDBConnection $connection) {
 		$this->connection = $connection;
@@ -53,7 +51,7 @@ class Version3003Date20180718112436 extends SimpleMigrationStep {
 
 		$table = $schema->getTable('talk_rooms');
 		if (!$table->hasColumn('last_activity')) {
-			$table->addColumn('last_activity', Type::DATETIME, [
+			$table->addColumn('last_activity', Types::DATETIME_MUTABLE, [
 				'notnull' => false,
 			]);
 
@@ -82,12 +80,12 @@ class Version3003Date20180718112436 extends SimpleMigrationStep {
 			->where($query->expr()->eq('object_type', $query->createNamedParameter('chat')))
 			->groupBy('object_id');
 
-		$result = $query->execute();
+		$result = $query->executeQuery();
 		while ($row = $result->fetch()) {
 			$lastActivity = new \DateTime($row['last_activity']);
 			$update->setParameter('activity', $lastActivity, IQueryBuilder::PARAM_DATE)
 				->setParameter('room', $row['object_id']);
-			$update->execute();
+			$update->executeStatement();
 		}
 		$result->closeCursor();
 	}

@@ -3,7 +3,7 @@
  *
  * @author John Molakvoæ <skjnldsv@protonmail.com>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -20,18 +20,18 @@
  *
  */
 
-import webdav from 'webdav'
+import { createClient, getPatcher } from 'webdav'
 import axios from '@nextcloud/axios'
 import parseUrl from 'url-parse'
 import { generateRemoteUrl } from '@nextcloud/router'
 
 // force our axios
-const patcher = webdav.getPatcher()
+const patcher = getPatcher()
 patcher.patch('request', axios)
 
 // init webdav client on default dav endpoint
-const remote = generateRemoteUrl(`dav`)
-const client = webdav.createClient(remote)
+const remote = generateRemoteUrl('dav')
+const client = createClient(remote)
 
 export const remotePath = parseUrl(remote).pathname
 export default client

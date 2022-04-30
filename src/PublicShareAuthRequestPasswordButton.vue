@@ -24,7 +24,7 @@
 			automatic colouring of the confirm icon by the Theming app. -->
 		<div id="submit-wrapper" class="request-password-wrapper">
 			<input id="request-password-button"
-				class="primary"
+				class="primary button-vue"
 				type="button"
 				:value="t('spreed', 'Request password')"
 				:disabled="isRequestInProgress"
@@ -39,10 +39,16 @@
 
 <script>
 import { getPublicShareAuthConversationToken } from './services/publicShareAuthService'
+import browserCheck from './mixins/browserCheck'
+import '@nextcloud/dialogs/styles/toast.scss'
 
 export default {
 
 	name: 'PublicShareAuthRequestPasswordButton',
+
+	mixins: [
+		browserCheck,
+	],
 
 	props: {
 		shareToken: {
@@ -77,6 +83,9 @@ export default {
 
 	methods: {
 		async requestPassword() {
+			// see browserCheck mixin
+			this.checkBrowser()
+
 			this.hasRequestFailed = false
 			this.isRequestLoading = true
 
@@ -104,7 +113,6 @@ export default {
 
 .request-password-wrapper .icon {
 	position: absolute;
-	top: 23px;
 	right: 23px;
 	pointer-events: none;
 }

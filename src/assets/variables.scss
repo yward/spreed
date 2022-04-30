@@ -20,6 +20,8 @@
  *
  */
 
+@use 'sass:math';
+
 // https://uxplanet.org/7-rules-for-mobile-ui-button-design-e9cf2ea54556
 // recommended is 48px
 // 44px is what we choose and have very good visual-to-usability ratio
@@ -31,7 +33,7 @@ $icon-size: 16px;
 
 // icon padding for a $clickable-area width and a $icon-size icon
 // ( 44px - 16px ) / 2
-$icon-margin: ($clickable-area - $icon-size) / 2;
+$icon-margin: math.div($clickable-area - $icon-size, 2);
 
 // transparency background for icons
 $icon-focus-bg: rgba(127, 127, 127, .25);
@@ -66,12 +68,9 @@ $message-max-width: 680px;
 $message-utils-width: 100px;
 
 //message form max height
-$message-form-max-height: 150px;
+$message-form-max-height: 180px;
 
-$top-bar-height: 50px;
-
-$top-bar-height: 60px;
-
+$color-call-background: #444444;
 $color-guests-avatar: #ffffff;
 $color-background-guests-avatar: #b9b9b9;
 
@@ -99,5 +98,30 @@ $chat-line-height: 1.6em;
 	&-enter-active,
 	&-leave-active {
 		transition: all 150ms ease-in-out;
+	}
+}
+
+.slide-down {
+	&-enter {
+		transform: translateY(50%);
+		opacity: 0;
+	}
+	&-enter-to {
+		transform: translateY(0);
+		opacity: 1;
+	}
+	&-leave {
+		transform: translateY(0);
+		opacity: 1;
+	}
+	&-leave-to {
+		transform: translateY(50%);
+		opacity: 0;
+	}
+	&-enter-active,
+	&-leave-active {
+		transition: all 150ms ease-in-out;
+		/* force top container to resize during animation */
+		position: absolute !important;
 	}
 }

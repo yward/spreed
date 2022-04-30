@@ -25,25 +25,32 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Controller;
 
+use GuzzleHttp\Exception\ConnectException;
 use OCA\Talk\Config;
 use OCA\Talk\Events\SignalingEvent;
 use OCA\Talk\Exceptions\RoomNotFoundException;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Manager;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Model\Session;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
+use OCA\Talk\Service\SessionService;
 use OCA\Talk\Signaling\Messages;
 use OCA\Talk\TalkSession;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\DataResponse;
 use OCP\AppFramework\OCSController;
 use OCP\AppFramework\Utility\ITimeFactory;
+use OCP\DB\Exception;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Http\Client\IClientService;
 use OCP\IDBConnection;
 use OCP\IRequest;
 use OCP\IUser;
 use OCP\IUserManager;
+use Psr\Log\LoggerInterface;
 
 class SignalingController extends OCSController {
 
@@ -52,28 +59,20 @@ class SignalingController extends OCSController {
 
 	public const EVENT_BACKEND_SIGNALING_ROOMS = self::class . '::signalingBackendRoom';
 
-	/** @var Config */
-	private $talkConfig;
-	/** @var \OCA\Talk\Signaling\Manager */
-	private $signalingManager;
-	/** @var TalkSession */
-	private $session;
-	/** @var Manager */
-	private $manager;
-	/** @var IDBConnection */
-	private $dbConnection;
-	/** @var Messages */
-	private $messages;
-	/** @var IUserManager */
-	private $userManager;
-	/** @var IEventDispatcher */
-	private $dispatcher;
-	/** @var ITimeFactory */
-	private $timeFactory;
-	/** @var IClientService */
-	private $clientService;
-	/** @var string|null */
-	private $userId;
+	private Config $talkConfig;
+	private \OCA\Talk\Signaling\Manager $signalingManager;
+	private TalkSession $session;
+	private Manager $manager;
+	private ParticipantService $participantService;
+	private SessionService $sessionService;
+	private IDBConnection $dbConnection;
+	private Messages $messages;
+	private IUserManager $userManager;
+	private IEventDispatcher $dispatcher;
+	private ITimeFactory $timeFactory;
+	private IClientService $clientService;
+	private LoggerInterface $logger;
+	private ?string $userId;
 
 	public function __construct(string $appName,
 								IRequest $request,
@@ -81,12 +80,15 @@ class SignalingController extends OCSController {
 								\OCA\Talk\Signaling\Manager $signalingManager,
 								TalkSession $session,
 								Manager $manager,
+								ParticipantService $participantService,
+								SessionService $sessionService,
 								IDBConnection $connection,
 								Messages $messages,
 								IUserManager $userManager,
 								IEventDispatcher $dispatcher,
 								ITimeFactory $timeFactory,
 								IClientService $clientService,
+								LoggerInterface $logger,
 								?string $UserId) {
 		parent::__construct($appName, $request);
 		$this->talkConfig = $talkConfig;
@@ -94,11 +96,14 @@ class SignalingController extends OCSController {
 		$this->session = $session;
 		$this->dbConnection = $connection;
 		$this->manager = $manager;
+		$this->participantService = $participantService;
+		$this->sessionService = $sessionService;
 		$this->messages = $messages;
 		$this->userManager = $userManager;
 		$this->dispatcher = $dispatcher;
 		$this->timeFactory = $timeFactory;
 		$this->clientService = $clientService;
+		$this->logger = $logger;
 		$this->userId = $UserId;
 	}
 
@@ -111,7 +116,7 @@ class SignalingController extends OCSController {
 	public function getSettings(string $token = ''): DataResponse {
 		try {
 			if ($token !== '') {
-				$room = $this->manager->getRoomForParticipantByToken($token, $this->userId);
+				$room = $this->manager->getRoomForUserByToken($token, $this->userId);
 			} else {
 				// FIXME Soft-fail for legacy support in mobile apps
 				$room = null;
@@ -121,31 +126,38 @@ class SignalingController extends OCSController {
 		}
 
 		$stun = [];
-		$stunServer = $this->talkConfig->getStunServer();
-		if ($stunServer) {
-			$stun[] = [
-				'url' => 'stun:' . $stunServer,
-			];
+		$stunUrls = [];
+		$stunServers = $this->talkConfig->getStunServers();
+		foreach ($stunServers as $stunServer) {
+			$stunUrls[] = 'stun:' . $stunServer;
 		}
+		$stun[] = [
+			'urls' => $stunUrls
+		];
 
 		$turn = [];
 		$turnSettings = $this->talkConfig->getTurnSettings();
-		if (!empty($turnSettings['server'])) {
-			$protocols = explode(',', $turnSettings['protocols']);
-			foreach ($protocols as $proto) {
-				$turn[] = [
-					'url' => ['turn:' . $turnSettings['server'] . '?transport=' . $proto],
-					'urls' => ['turn:' . $turnSettings['server'] . '?transport=' . $proto],
-					'username' => $turnSettings['username'],
-					'credential' => $turnSettings['password'],
-				];
+		foreach ($turnSettings as $turnServer) {
+			$turnUrls = [];
+			$schemes = explode(',', $turnServer['schemes']);
+			$protocols = explode(',', $turnServer['protocols']);
+			foreach ($schemes as $scheme) {
+				foreach ($protocols as $proto) {
+					$turnUrls[] = $scheme . ':' . $turnServer['server'] . '?transport=' . $proto;
+				}
 			}
+
+			$turn[] = [
+				'urls' => $turnUrls,
+				'username' => $turnServer['username'],
+				'credential' => $turnServer['password'],
+			];
 		}
 
 		$signalingMode = $this->talkConfig->getSignalingMode();
 		$signaling = $this->signalingManager->getSignalingServerLinkForConversation($room);
 
-		return new DataResponse([
+		$data = [
 			'signalingMode' => $signalingMode,
 			'userId' => $this->userId,
 			'hideWarning' => $signaling !== '' || $this->talkConfig->getHideSignalingWarning(),
@@ -153,7 +165,10 @@ class SignalingController extends OCSController {
 			'ticket' => $this->talkConfig->getSignalingTicket($this->userId),
 			'stunservers' => $stun,
 			'turnservers' => $turn,
-		]);
+			'sipDialinInfo' => $this->talkConfig->isSIPConfigured() ? $this->talkConfig->getDialInInfo() : '',
+		];
+
+		return new DataResponse($data);
 	}
 
 	/**
@@ -183,17 +198,36 @@ class SignalingController extends OCSController {
 		try {
 			$response = $client->get($url . '/api/v1/welcome', [
 				'verify' => (bool) $signalingServers[$serverId]['verify'],
+				'nextcloud' => [
+					'allow_local_address' => true,
+				],
 			]);
 
 			$body = $response->getBody();
-
 			$data = json_decode($body, true);
-			if (!is_array($data) || !isset($data['version'])) {
-				return new DataResponse(['error' => 'JSON_INVALID'], Http::STATUS_INTERNAL_SERVER_ERROR);
+
+			if (!is_array($data)) {
+				return new DataResponse([
+					'error' => 'JSON_INVALID',
+				], Http::STATUS_INTERNAL_SERVER_ERROR);
+			}
+
+			if (!isset($data['version'])) {
+				return new DataResponse([
+					'error' => 'UPDATE_REQUIRED',
+					'version' => '',
+				], Http::STATUS_INTERNAL_SERVER_ERROR);
+			}
+
+			if (!$this->signalingManager->isCompatibleSignalingServer($response)) {
+				return new DataResponse([
+					'error' => 'UPDATE_REQUIRED',
+					'version' => $data['version'] ?? '',
+				], Http::STATUS_INTERNAL_SERVER_ERROR);
 			}
 
 			return new DataResponse($data);
-		} catch (\GuzzleHttp\Exception\ConnectException $e) {
+		} catch (ConnectException $e) {
 			return new DataResponse(['error' => 'CAN_NOT_CONNECT'], Http::STATUS_INTERNAL_SERVER_ERROR);
 		} catch (\Exception $e) {
 			return new DataResponse(['error' => $e->getCode()], Http::STATUS_INTERNAL_SERVER_ERROR);
@@ -268,9 +302,12 @@ class SignalingController extends OCSController {
 			}
 
 			$room = $this->manager->getRoomForSession($this->userId, $sessionId);
+			$participant = $room->getParticipantBySession($sessionId); // FIXME this causes another query
 
 			$pingTimestamp = $this->timeFactory->getTime();
-			$room->ping($this->userId, $sessionId, $pingTimestamp);
+			if ($participant->getSession() instanceof Session) {
+				$this->sessionService->updateLastPing($participant->getSession(), $pingTimestamp);
+			}
 		} catch (RoomNotFoundException $e) {
 			return new DataResponse([['type' => 'usersInRoom', 'data' => []]], Http::STATUS_NOT_FOUND);
 		}
@@ -313,7 +350,25 @@ class SignalingController extends OCSController {
 			$data[] = ['type' => 'usersInRoom', 'data' => $this->getUsersInRoom($room, $pingTimestamp)];
 		} catch (RoomNotFoundException $e) {
 			$data[] = ['type' => 'usersInRoom', 'data' => []];
-			return new DataResponse($data, Http::STATUS_NOT_FOUND);
+
+			// Was the session killed or the complete conversation?
+			try {
+				$room = $this->manager->getRoomForUserByToken($token, $this->userId);
+				if ($this->userId) {
+					// For logged in users we check if they are still part of the public conversation,
+					// if not they were removed instead of having a conflict.
+					$room->getParticipant($this->userId, false);
+				}
+
+				// Session was killed, make the UI redirect to an error
+				return new DataResponse($data, Http::STATUS_CONFLICT);
+			} catch (ParticipantNotFoundException $e) {
+				// User removed from conversation, bye!
+				return new DataResponse($data, Http::STATUS_NOT_FOUND);
+			} catch (RoomNotFoundException $e) {
+				// Complete conversation was killed, bye!
+				return new DataResponse($data, Http::STATUS_NOT_FOUND);
+			}
 		}
 
 		return new DataResponse($data);
@@ -333,19 +388,26 @@ class SignalingController extends OCSController {
 		$timestamp = min($this->timeFactory->getTime() - (self::PULL_MESSAGES_TIMEOUT + 10), $pingTimestamp);
 		// "- 1" is needed because only the participants whose last ping is
 		// greater than the given timestamp are returned.
-		$participants = $room->getParticipants($timestamp - 1);
+		$participants = $this->participantService->getParticipantsForAllSessions($room, $timestamp - 1);
 		foreach ($participants as $participant) {
-			if ($participant->getSessionId() === '0') {
-				// User is not active
+			$session = $participant->getSession();
+			if (!$session instanceof Session) {
+				// This is just to make Psalm happy, since we select by session it's always with one.
 				continue;
 			}
 
+			$userId = '';
+			if ($participant->getAttendee()->getActorType() === Attendee::ACTOR_USERS) {
+				$userId = $participant->getAttendee()->getActorId();
+			}
+
 			$usersInRoom[] = [
-				'userId' => $participant->getUser(),
+				'userId' => $userId,
 				'roomId' => $room->getId(),
-				'lastPing' => $participant->getLastPing(),
-				'sessionId' => $participant->getSessionId(),
-				'inCall' => $participant->getInCallFlags(),
+				'lastPing' => $session->getLastPing(),
+				'sessionId' => $session->getSessionId(),
+				'inCall' => $session->getInCall(),
+				'participantPermissions' => $participant->getPermissions(),
 			];
 		}
 
@@ -396,7 +458,7 @@ class SignalingController extends OCSController {
 	 * servers.
 	 *
 	 * See sections "Backend validation" in
-	 * https://nextcloud-talk.readthedocs.io/en/latest/standalone-signaling-api-v1/#backend-validation
+	 * https://nextcloud-spreed-signaling.readthedocs.io/en/latest/standalone-signaling-api-v1/#backend-requests
 	 *
 	 * @PublicPage
 	 *
@@ -440,6 +502,10 @@ class SignalingController extends OCSController {
 		$params = $auth['params'];
 		$userId = $params['userid'];
 		if (!$this->talkConfig->validateSignalingTicket($userId, $params['ticket'])) {
+			$this->logger->debug('Signaling ticket for {user} was not valid', [
+				'user' => !empty($userId) ? $userId : '(guests)',
+				'app' => 'spreed-hpb',
+			]);
 			return new DataResponse([
 				'type' => 'error',
 				'error' => [
@@ -452,6 +518,10 @@ class SignalingController extends OCSController {
 		if (!empty($userId)) {
 			$user = $this->userManager->get($userId);
 			if (!$user instanceof IUser) {
+				$this->logger->debug('Tried to validate signaling ticket for {user}, but user manager returned no user', [
+					'user' => $userId,
+					'app' => 'spreed-hpb',
+				]);
 				return new DataResponse([
 					'type' => 'error',
 					'error' => [
@@ -474,18 +544,99 @@ class SignalingController extends OCSController {
 				'displayname' => $user->getDisplayName(),
 			];
 		}
+		$this->logger->debug('Validated signaling ticket for {user}', [
+			'user' => !empty($userId) ? $userId : '(guests)',
+			'app' => 'spreed-hpb',
+		]);
 		return new DataResponse($response);
 	}
 
 	private function backendRoom(array $roomRequest): DataResponse {
-		$roomId = $roomRequest['roomid'];
+		$token = $roomRequest['roomid']; // It's actually the room token
 		$userId = $roomRequest['userid'];
 		$sessionId = $roomRequest['sessionid'];
 		$action = !empty($roomRequest['action']) ? $roomRequest['action'] : 'join';
+		$actorId = $roomRequest['actorid'] ?? null;
+		$actorType = $roomRequest['actortype'] ?? null;
+		$inCall = $roomRequest['incall'] ?? null;
 
-		try {
-			$room = $this->manager->getRoomByToken($roomId);
-		} catch (RoomNotFoundException $e) {
+		$participant = null;
+		if ($actorId !== null && $actorType !== null) {
+			try {
+				$room = $this->manager->getRoomByActor($token, $actorType, $actorId);
+			} catch (RoomNotFoundException $e) {
+				$this->logger->debug('Failed to get room {token} by actor {actorType}/{actorId}', [
+					'token' => $token,
+					'actorType' => $actorType ?? 'null',
+					'actorId' => $actorId ?? 'null',
+					'app' => 'spreed-hpb',
+				]);
+				return new DataResponse([
+					'type' => 'error',
+					'error' => [
+						'code' => 'no_such_room',
+						'message' => 'The user is not invited to this room.',
+					],
+				]);
+			}
+
+			if ($sessionId) {
+				try {
+					$participant = $room->getParticipantBySession($sessionId);
+				} catch (ParticipantNotFoundException $e) {
+					if ($action === 'join') {
+						// If the user joins the session might not be known to the server yet.
+						// In this case we load by actor information and use the session id as new session.
+						try {
+							$participant = $room->getParticipantByActor($actorType, $actorId);
+						} catch (ParticipantNotFoundException $e) {
+						}
+					}
+				}
+			} else {
+				try {
+					$participant = $room->getParticipantByActor($actorType, $actorId);
+				} catch (ParticipantNotFoundException $e) {
+				}
+			}
+		} else {
+			try {
+				// FIXME Don't preload with the user as that misses the session, kinda meh.
+				$room = $this->manager->getRoomByToken($token);
+			} catch (RoomNotFoundException $e) {
+				$this->logger->debug('Failed to get room by token {token}', [
+					'token' => $token,
+					'app' => 'spreed-hpb',
+				]);
+				return new DataResponse([
+					'type' => 'error',
+					'error' => [
+						'code' => 'no_such_room',
+						'message' => 'The user is not invited to this room.',
+					],
+				]);
+			}
+
+			if ($sessionId) {
+				try {
+					$participant = $room->getParticipantBySession($sessionId);
+				} catch (ParticipantNotFoundException $e) {
+				}
+			} elseif (!empty($userId)) {
+				// User trying to join room.
+				try {
+					$participant = $room->getParticipant($userId, false);
+				} catch (ParticipantNotFoundException $e) {
+				}
+			}
+		}
+
+		if (!$participant instanceof Participant) {
+			$this->logger->debug('Failed to get room {token} with participant', [
+				'token' => $token,
+				'app' => 'spreed-hpb',
+			]);
+			// Return generic error to avoid leaking which rooms exist.
 			return new DataResponse([
 				'type' => 'error',
 				'error' => [
@@ -495,45 +646,68 @@ class SignalingController extends OCSController {
 			]);
 		}
 
-		$participant = null;
-		if (!empty($userId)) {
-			// User trying to join room.
-			try {
-				$participant = $room->getParticipant($userId);
-			} catch (ParticipantNotFoundException $e) {
-				// Ignore, will check for public rooms below.
-			}
-		}
-
-		if (!$participant instanceof Participant) {
-			// User was not invited to the room, check for access to public room.
-			try {
-				$participant = $room->getParticipantBySession($sessionId);
-			} catch (ParticipantNotFoundException $e) {
-				// Return generic error to avoid leaking which rooms exist.
-				return new DataResponse([
-					'type' => 'error',
-					'error' => [
-						'code' => 'no_such_room',
-						'message' => 'The user is not invited to this room.',
-					],
-				]);
-			}
-		}
-
 		if ($action === 'join') {
-			$room->ping($userId, $sessionId, $this->timeFactory->getTime());
+			if ($sessionId && !$participant->getSession() instanceof Session) {
+				try {
+					$session = $this->sessionService->createSessionForAttendee($participant->getAttendee(), $sessionId);
+				} catch (Exception $e) {
+					return new DataResponse([
+						'type' => 'error',
+						'error' => [
+							'code' => 'duplicate_session',
+							'message' => 'The given session is already in use.',
+						],
+					]);
+				}
+				$participant->setSession($session);
+			}
+
+			if ($participant->getSession() instanceof Session) {
+				if ($inCall !== null) {
+					$this->participantService->changeInCall($room, $participant, $inCall);
+				}
+				$this->sessionService->updateLastPing($participant->getSession(), $this->timeFactory->getTime());
+			}
 		} elseif ($action === 'leave') {
-			if (!empty($userId)) {
-				$room->leaveRoom($userId, $sessionId);
-			} elseif ($participant instanceof Participant) {
-				$room->removeParticipantBySession($participant, Room::PARTICIPANT_LEFT);
+			// Guests are removed completely as they don't reuse attendees,
+			// but this is only true for guests that joined directly.
+			// Emails are retained as their PIN needs to remain and stay
+			// valid.
+			if ($participant->getAttendee()->getActorType() === Attendee::ACTOR_GUESTS) {
+				$this->participantService->removeAttendee($room, $participant, Room::PARTICIPANT_LEFT);
+			} else {
+				$this->participantService->leaveRoomAsSession($room, $participant);
 			}
 		}
 
-		$permissions = ['publish-media', 'publish-screen'];
-		if ($participant instanceof Participant && $participant->hasModeratorPermissions(false)) {
-			$permissions[] = 'control';
+		$permissions = [];
+		if ($participant instanceof Participant) {
+			$this->logger->debug('Room request to "{action}" room {token} by actor {actorType}/{actorId}', [
+				'token' => $token,
+				'action' => $action ?? 'null',
+				'actorType' => $participant->getAttendee()->getActorType(),
+				'actorId' => $participant->getAttendee()->getActorId(),
+				'app' => 'spreed-hpb',
+			]);
+
+			if ($participant->getPermissions() & Attendee::PERMISSIONS_PUBLISH_AUDIO) {
+				$permissions[] = 'publish-audio';
+			}
+			if ($participant->getPermissions() & Attendee::PERMISSIONS_PUBLISH_VIDEO) {
+				$permissions[] = 'publish-video';
+			}
+			if ($participant->getPermissions() & Attendee::PERMISSIONS_PUBLISH_SCREEN) {
+				$permissions[] = 'publish-screen';
+			}
+			if ($participant->hasModeratorPermissions(false)) {
+				$permissions[] = 'control';
+			}
+		} else {
+			$this->logger->debug('Room request to "{action}" room {token} without session', [
+				'token' => $token,
+				'action' => $action ?? 'null',
+				'app' => 'spreed-hpb',
+			]);
 		}
 
 		$event = new SignalingEvent($room, $participant, $action);
@@ -558,6 +732,10 @@ class SignalingController extends OCSController {
 		try {
 			$room = $this->manager->getRoomByToken($request['roomid']);
 		} catch (RoomNotFoundException $e) {
+			$this->logger->debug('Tried to ping non existing room {token}', [
+				'token' => $request['roomid'],
+				'app' => 'spreed-hpb',
+			]);
 			return new DataResponse([
 				'type' => 'error',
 				'error' => [
@@ -576,7 +754,7 @@ class SignalingController extends OCSController {
 		}
 
 		// Ping all active sessions with one query
-		$room->pingSessionIds($pingSessionIds, $now);
+		$this->sessionService->updateMultipleLastPings($pingSessionIds, $now);
 
 		$response = [
 			'type' => 'room',
@@ -585,6 +763,11 @@ class SignalingController extends OCSController {
 				'roomid' => $room->getToken(),
 			],
 		];
+		$this->logger->debug('Pinged {numSessions} sessions in room {token}', [
+			'numSessions' => count($pingSessionIds),
+			'token' => $request['roomid'],
+			'app' => 'spreed-hpb',
+		]);
 		return new DataResponse($response);
 	}
 }

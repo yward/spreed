@@ -31,11 +31,8 @@ use OCP\AppFramework\Db\DoesNotExistException;
 use OCP\EventDispatcher\IEventDispatcher;
 
 class Listener {
-
-	/** @var CommandService */
-	protected $commandService;
-	/** @var Executor */
-	protected $executor;
+	protected CommandService $commandService;
+	protected Executor $executor;
 
 	public function __construct(CommandService $commandService,
 								Executor $executor) {
@@ -44,40 +41,35 @@ class Listener {
 	}
 
 	public static function register(IEventDispatcher $dispatcher): void {
-		$dispatcher->addListener(ChatManager::EVENT_BEFORE_MESSAGE_SEND, static function (ChatParticipantEvent $event) {
-			$message = $event->getComment();
-			$participant = $event->getParticipant();
+		$dispatcher->addListener(ChatManager::EVENT_BEFORE_MESSAGE_SEND, [self::class, 'executeCommand']);
+	}
 
-			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
+	public static function executeCommand(ChatParticipantEvent $event): void {
+		$message = $event->getComment();
+		$participant = $event->getParticipant();
 
-			if (strpos($message->getMessage(), '//') === 0) {
-				return;
-			}
+		/** @var self $listener */
+		$listener = \OC::$server->get(self::class);
 
-			try {
-				/** @var Command $command */
-				/** @var string $arguments */
-				[$command, $arguments] = $listener->getCommand($message->getMessage());
-				$command = $listener->commandService->resolveAlias($command);
-			} catch (DoesNotExistException $e) {
-				return;
-			}
+		if (strpos($message->getMessage(), '//') === 0) {
+			return;
+		}
 
-			if ($command->getEnabled() === Command::ENABLED_OFF) {
-				return;
-			}
+		try {
+			/** @var Command $command */
+			/** @var string $arguments */
+			[$command, $arguments] = $listener->getCommand($message->getMessage());
+			$command = $listener->commandService->resolveAlias($command);
+		} catch (DoesNotExistException $e) {
+			return;
+		}
 
-			if ($command->getEnabled() === Command::ENABLED_MODERATOR && !$participant->hasModeratorPermissions()) {
-				return;
-			}
+		if (!$listener->executor->isCommandAvailableForParticipant($command, $participant)) {
+			$command = $listener->commandService->find('', 'help');
+			$arguments = trim($message->getMessage());
+		}
 
-			if ($command->getEnabled() === Command::ENABLED_USERS && $participant->isGuest()) {
-				return;
-			}
-
-			$listener->executor->exec($event->getRoom(), $message, $command, $arguments);
-		});
+		$listener->executor->exec($event->getRoom(), $message, $command, $arguments, $participant);
 	}
 
 	/**
@@ -98,11 +90,11 @@ class Listener {
 		}
 
 		try {
-			return [$this->commandService->find('',  $app), trim($cmd . ' ' . $arguments)];
+			return [$this->commandService->find('', $app), trim($cmd . ' ' . $arguments)];
 		} catch (DoesNotExistException $e) {
 		}
 
-		return [$this->commandService->find('',  'help'), trim($message)];
+		return [$this->commandService->find('', 'help'), trim($message)];
 	}
 
 	protected function matchesCommand(string $message): array {

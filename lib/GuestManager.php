@@ -25,11 +25,10 @@ namespace OCA\Talk;
 
 use OCA\Talk\Events\AddEmailEvent;
 use OCA\Talk\Events\ModifyParticipantEvent;
-use OCA\Talk\Exceptions\ParticipantNotFoundException;
-use OCP\DB\QueryBuilder\IQueryBuilder;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Service\ParticipantService;
 use OCP\Defaults;
 use OCP\EventDispatcher\IEventDispatcher;
-use OCP\IDBConnection;
 use OCP\IL10N;
 use OCP\IURLGenerator;
 use OCP\IUser;
@@ -42,38 +41,35 @@ class GuestManager {
 	public const EVENT_AFTER_EMAIL_INVITE = self::class . '::postInviteByEmail';
 	public const EVENT_AFTER_NAME_UPDATE = self::class . '::updateName';
 
-	/** @var IDBConnection */
-	protected $connection;
+	protected Config $talkConfig;
 
-	/** @var IMailer */
-	protected $mailer;
+	protected IMailer $mailer;
 
-	/** @var Defaults */
-	protected $defaults;
+	protected Defaults $defaults;
 
-	/** @var IUserSession */
-	protected $userSession;
+	protected IUserSession $userSession;
 
-	/** @var IURLGenerator */
-	protected $url;
+	private ParticipantService $participantService;
 
-	/** @var IL10N */
-	protected $l;
+	protected IURLGenerator $url;
 
-	/** @var IEventDispatcher */
-	protected $dispatcher;
+	protected IL10N $l;
 
-	public function __construct(IDBConnection $connection,
+	protected IEventDispatcher $dispatcher;
+
+	public function __construct(Config $talkConfig,
 								IMailer $mailer,
 								Defaults $defaults,
 								IUserSession $userSession,
+								ParticipantService $participantService,
 								IURLGenerator $url,
 								IL10N $l,
 								IEventDispatcher $dispatcher) {
-		$this->connection = $connection;
+		$this->talkConfig = $talkConfig;
 		$this->mailer = $mailer;
 		$this->defaults = $defaults;
 		$this->userSession = $userSession;
+		$this->participantService = $participantService;
 		$this->url = $url;
 		$this->l = $l;
 		$this->dispatcher = $dispatcher;
@@ -83,87 +79,28 @@ class GuestManager {
 	 * @param Room $room
 	 * @param Participant $participant
 	 * @param string $displayName
-	 * @throws \Doctrine\DBAL\DBALException
 	 */
 	public function updateName(Room $room, Participant $participant, string $displayName): void {
-		$sessionHash = sha1($participant->getSessionId());
-		$dispatchEvent = true;
+		$attendee = $participant->getAttendee();
+		if ($attendee->getDisplayName() !== $displayName) {
+			$this->participantService->updateDisplayNameForActor(
+				$attendee->getActorType(),
+				$attendee->getActorId(),
+				$displayName
+			);
 
-		try {
-			$oldName = $this->getNameBySessionHash($sessionHash, true);
-
-			if ($oldName !== $displayName) {
-				$query = $this->connection->getQueryBuilder();
-				$query->update('talk_guests')
-					->set('display_name', $query->createNamedParameter($displayName))
-					->where($query->expr()->eq('session_hash', $query->createNamedParameter($sessionHash)));
-				$query->execute();
-			} else {
-				$dispatchEvent = false;
-			}
-		} catch (ParticipantNotFoundException $e) {
-			$this->connection->insertIfNotExist('*PREFIX*talk_guests', [
-				'session_hash' => $sessionHash,
-				'display_name' => $displayName,
-			], ['session_hash']);
-		}
-
-		if ($dispatchEvent) {
 			$event = new ModifyParticipantEvent($room, $participant, 'name', $displayName);
 			$this->dispatcher->dispatch(self::EVENT_AFTER_NAME_UPDATE, $event);
 		}
 	}
 
-	/**
-	 * @param string $sessionHash
-	 * @param bool $allowEmpty
-	 * @return string
-	 * @throws ParticipantNotFoundException
-	 */
-	public function getNameBySessionHash(string $sessionHash, bool $allowEmpty = false): string {
-		$query = $this->connection->getQueryBuilder();
-		$query->select('display_name')
-			->from('talk_guests')
-			->where($query->expr()->eq('session_hash', $query->createNamedParameter($sessionHash)));
-
-		$result = $query->execute();
-		$row = $result->fetch();
-		$result->closeCursor();
-
-		if (isset($row['display_name']) && ($allowEmpty || $row['display_name'] !== '')) {
-			return $row['display_name'];
+	public function sendEmailInvitation(Room $room, Participant $participant): void {
+		if ($participant->getAttendee()->getActorType() !== Attendee::ACTOR_EMAILS) {
+			throw new \InvalidArgumentException('Cannot send email for non-email participant actor type');
 		}
+		$email = $participant->getAttendee()->getActorId();
+		$pin = $participant->getAttendee()->getPin();
 
-		throw new ParticipantNotFoundException();
-	}
-
-	/**
-	 * @param string[] $sessionHashes
-	 * @return string[]
-	 */
-	public function getNamesBySessionHashes(array $sessionHashes): array {
-		$query = $this->connection->getQueryBuilder();
-		$query->select('*')
-			->from('talk_guests')
-			->where($query->expr()->in('session_hash', $query->createNamedParameter($sessionHashes, IQueryBuilder::PARAM_STR_ARRAY)));
-
-		$result = $query->execute();
-
-		$map = [];
-
-		while ($row = $result->fetch()) {
-			if ($row['display_name'] === '') {
-				continue;
-			}
-
-			$map[$row['session_hash']] = $row['display_name'];
-		}
-		$result->closeCursor();
-
-		return $map;
-	}
-
-	public function inviteByEmail(Room $room, string $email): void {
 		$event = new AddEmailEvent($room, $email);
 		$this->dispatcher->dispatch(self::EVENT_BEFORE_EMAIL_INVITE, $event);
 
@@ -178,6 +115,8 @@ class GuestManager {
 			'invitee' => $invitee,
 			'roomName' => $room->getDisplayName(''),
 			'roomLink' => $link,
+			'email' => $email,
+			'pin' => $pin,
 		]);
 
 		if ($user instanceof IUser) {
@@ -200,6 +139,28 @@ class GuestManager {
 			$this->l->t('Join »%s«', [$room->getDisplayName('')]),
 			$link
 		);
+
+		if ($pin) {
+			$template->addBodyText($this->l->t('You can also dial-in via phone with the following details'));
+
+			$template->addBodyListItem(
+				$this->talkConfig->getDialInInfo(),
+				$this->l->t('Dial-in information'),
+				$this->url->getAbsoluteURL($this->url->imagePath('spreed', 'phone.png'))
+			);
+
+			$template->addBodyListItem(
+				$room->getToken(),
+				$this->l->t('Meeting ID'),
+				$this->url->getAbsoluteURL($this->url->imagePath('core', 'places/calendar-dark.png'))
+			);
+
+			$template->addBodyListItem(
+				$pin,
+				$this->l->t('Your PIN'),
+				$this->url->getAbsoluteURL($this->url->imagePath('core', 'actions/password.png'))
+			);
+		}
 
 		$template->addFooter();
 

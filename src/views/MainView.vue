@@ -2,13 +2,11 @@
 	<div class="main-view">
 		<LobbyScreen v-if="isInLobby" />
 		<template v-else>
-			<TopBar
-				:is-in-call="showChatInSidebar" />
+			<TopBar :is-in-call="showChatInSidebar" />
 			<transition name="fade">
-				<ChatView v-if="!showChatInSidebar" :token="token" />
+				<ChatView v-if="!showChatInSidebar" />
 				<template v-else>
-					<CallView
-						:token="token" />
+					<CallView :token="token" />
 				</template>
 			</transition>
 		</template>
@@ -20,8 +18,9 @@ import CallView from '../components/CallView/CallView'
 import ChatView from '../components/ChatView'
 import LobbyScreen from '../components/LobbyScreen'
 import TopBar from '../components/TopBar/TopBar'
-import { PARTICIPANT } from '../constants'
 import isInLobby from '../mixins/isInLobby'
+import isInCall from '../mixins/isInCall'
+import participant from '../mixins/participant'
 
 export default {
 	name: 'MainView',
@@ -34,7 +33,10 @@ export default {
 
 	mixins: [
 		isInLobby,
+		isInCall,
+		participant,
 	],
+
 	props: {
 		token: {
 			type: String,
@@ -47,32 +49,15 @@ export default {
 			return this.$store.getters.conversation(this.token)
 		},
 
-		participant() {
-			if (typeof this.token === 'undefined') {
-				return {
-					inCall: PARTICIPANT.CALL_FLAG.DISCONNECTED,
-				}
-			}
-
-			const participantIndex = this.$store.getters.getParticipantIndex(this.token, this.$store.getters.getParticipantIdentifier())
-			if (participantIndex !== -1) {
-				return this.$store.getters.getParticipant(this.token, participantIndex)
-			}
-
-			return {
-				inCall: PARTICIPANT.CALL_FLAG.DISCONNECTED,
-			}
-		},
-
 		showChatInSidebar() {
-			return this.participant.inCall !== PARTICIPANT.CALL_FLAG.DISCONNECTED
+			return this.isInCall
 		},
 	},
 
 	watch: {
-		isInLobby: function(isInLobby) {
+		isInLobby(isInLobby) {
 			// User is now blocked by the lobby
-			if (isInLobby && this.participant.inCall !== PARTICIPANT.CALL_FLAG.DISCONNECTED) {
+			if (isInLobby && this.isInCall) {
 				this.$store.dispatch('leaveCall', {
 					token: this.token,
 					participantIdentifier: this.$store.getters.getParticipantIdentifier(),

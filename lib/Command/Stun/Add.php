@@ -32,9 +32,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class Add extends Base {
-
-	/** @var IConfig */
-	private $config;
+	private IConfig $config;
 
 	public function __construct(IConfig $config) {
 		parent::__construct();
@@ -52,7 +50,7 @@ class Add extends Base {
 			);
 	}
 
-	protected function execute(InputInterface $input, OutputInterface $output): ?int {
+	protected function execute(InputInterface $input, OutputInterface $output): int {
 		$server = $input->getArgument('server');
 		// check input, similar to stun-server.js
 		$host = parse_url($server, PHP_URL_HOST);

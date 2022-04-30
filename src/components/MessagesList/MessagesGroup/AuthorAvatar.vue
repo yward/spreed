@@ -21,8 +21,13 @@
 
 <template>
 	<Avatar v-if="isUser"
+		:disable-tooltip="true"
 		class="messages__avatar__icon"
 		:user="authorId"
+		:show-user-status="false"
+		:disable-menu="disableMenu"
+		:menu-container="menuContainer"
+		menu-position="left"
 		:display-name="displayName" />
 	<div v-else-if="isDeletedUser"
 		class="avatar-32px guest">
@@ -42,6 +47,7 @@
 
 <script>
 import Avatar from '@nextcloud/vue/dist/Components/Avatar'
+import { ATTENDEE } from '../../../constants'
 
 export default {
 	name: 'AuthorAvatar',
@@ -68,7 +74,7 @@ export default {
 			return this.authorType === 'bots' && this.authorId === 'changelog'
 		},
 		isUser() {
-			return this.authorType === 'users'
+			return this.authorType === 'users' || this.authorType === ATTENDEE.ACTOR_TYPE.BRIDGED
 		},
 		isDeletedUser() {
 			return this.authorType === 'deleted_users'
@@ -81,12 +87,22 @@ export default {
 			const customName = this.displayName !== t('spreed', 'Guest') ? this.displayName : '?'
 			return customName.charAt(0)
 		},
+
+		menuContainer() {
+			return this.$store.getters.getMainContainerSelector()
+		},
+
+		disableMenu() {
+			// disable the menu if accessing the conversation as guest
+			// or the message sender is a bridged user
+			return this.$store.getters.getActorType() === 'guests' || this.authorType === ATTENDEE.ACTOR_TYPE.BRIDGED
+		},
 	},
 }
 </script>
 
 <style lang="scss" scoped>
-@import '../../../assets/avatar.scss';
+@import '../../../assets/avatar';
 
 // size of avatars of chat message authors
 $author-avatar-size: 32px;

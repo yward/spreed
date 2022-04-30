@@ -40,13 +40,12 @@
 
 		<ul class="stun-servers">
 			<transition-group name="fade" tag="li">
-				<StunServer
-					v-for="(server, index) in servers"
+				<StunServer v-for="(server, index) in servers"
 					:key="`server${index}`"
 					:server.sync="servers[index]"
 					:index="index"
 					:loading="loading"
-					@removeServer="removeServer"
+					@remove-server="removeServer"
 					@update:server="debounceUpdateServers" />
 			</transition-group>
 		</ul>
@@ -80,8 +79,8 @@ export default {
 	},
 
 	beforeMount() {
-		this.servers = loadState('talk', 'stun_servers')
-		this.hasInternetConnection = loadState('talk', 'has_internet_connection')
+		this.servers = loadState('spreed', 'stun_servers')
+		this.hasInternetConnection = loadState('spreed', 'has_internet_connection')
 	},
 
 	methods: {
@@ -114,9 +113,9 @@ export default {
 			this.servers.forEach((server) => {
 
 				if (server.startsWith('https://')) {
-					server = server.substr(8)
+					server = server.slice(8)
 				} else if (server.startsWith('http://')) {
-					server = server.substr(7)
+					server = server.slice(7)
 				}
 
 				servers.push(server)

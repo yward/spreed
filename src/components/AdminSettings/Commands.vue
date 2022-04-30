@@ -30,6 +30,7 @@
 			</small>
 		</h2>
 
+		<!-- eslint-disable-next-line vue/no-v-html -->
 		<p class="settings-hint" v-html="commandHint" />
 
 		<div id="commands_list">
@@ -79,7 +80,7 @@ export default {
 	},
 
 	mounted() {
-		this.commands = loadState('talk', 'commands')
+		this.commands = loadState('spreed', 'commands')
 	},
 }
 </script>

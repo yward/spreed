@@ -21,6 +21,7 @@
 
 namespace OCA\Talk\Tests\php\Notifications;
 
+use OCA\FederatedFileSharing\AddressHandler;
 use OCA\Talk\Chat\CommentsManager;
 use OCA\Talk\Chat\MessageParser;
 use OCA\Talk\Config;
@@ -28,10 +29,12 @@ use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Exceptions\RoomNotFoundException;
 use OCA\Talk\GuestManager;
 use OCA\Talk\Manager;
+use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\Message;
 use OCA\Talk\Notification\Notifier;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
 use OCP\Comments\IComment;
 use OCP\IL10N;
 use OCP\IURLGenerator;
@@ -44,8 +47,9 @@ use OCP\Notification\INotification;
 use OCP\RichObjectStrings\Definitions;
 use OCP\Share\IManager as IShareManager;
 use PHPUnit\Framework\MockObject\MockObject;
+use Test\TestCase;
 
-class NotifierTest extends \Test\TestCase {
+class NotifierTest extends TestCase {
 
 	/** @var IFactory|MockObject */
 	protected $lFactory;
@@ -61,6 +65,8 @@ class NotifierTest extends \Test\TestCase {
 	protected $shareManager;
 	/** @var Manager|MockObject */
 	protected $manager;
+	/** @var ParticipantService|MockObject */
+	protected $participantService;
 	/** @var INotificationManager|MockObject */
 	protected $notificationManager;
 	/** @var CommentsManager|MockObject */
@@ -69,8 +75,9 @@ class NotifierTest extends \Test\TestCase {
 	protected $messageParser;
 	/** @var Definitions|MockObject */
 	protected $definitions;
-	/** @var Notifier */
-	protected $notifier;
+	protected ?Notifier $notifier = null;
+	/** @var AddressHandler|MockObject */
+	protected $addressHandler;
 
 	public function setUp(): void {
 		parent::setUp();
@@ -82,10 +89,12 @@ class NotifierTest extends \Test\TestCase {
 		$this->guestManager = $this->createMock(GuestManager::class);
 		$this->shareManager = $this->createMock(IShareManager::class);
 		$this->manager = $this->createMock(Manager::class);
+		$this->participantService = $this->createMock(ParticipantService::class);
 		$this->notificationManager = $this->createMock(INotificationManager::class);
 		$this->commentsManager = $this->createMock(CommentsManager::class);
 		$this->messageParser = $this->createMock(MessageParser::class);
 		$this->definitions = $this->createMock(Definitions::class);
+		$this->addressHandler = $this->createMock(AddressHandler::class);
 
 		$this->notifier = new Notifier(
 			$this->lFactory,
@@ -95,10 +104,12 @@ class NotifierTest extends \Test\TestCase {
 			$this->guestManager,
 			$this->shareManager,
 			$this->manager,
+			$this->participantService,
 			$this->notificationManager,
 			$this->commentsManager,
 			$this->messageParser,
-			$this->definitions
+			$this->definitions,
+			$this->addressHandler
 		);
 	}
 
@@ -128,7 +139,7 @@ class NotifierTest extends \Test\TestCase {
 		$room = $this->createMock(Room::class);
 		$room->expects($this->any())
 			->method('getType')
-			->willReturn(Room::ONE_TO_ONE_CALL);
+			->willReturn(Room::TYPE_ONE_TO_ONE);
 		$room->expects($this->any())
 			->method('getId')
 			->willReturn(1234);
@@ -147,18 +158,20 @@ class NotifierTest extends \Test\TestCase {
 			->willReturn($l);
 
 		$recipient = $this->createMock(IUser::class);
-		$this->userManager->expects($this->at(0))
-			->method('get')
-			->with('recipient')
-			->willReturn($recipient);
 		$u = $this->createMock(IUser::class);
 		$u->expects($this->exactly(2))
 			->method('getDisplayName')
 			->willReturn($displayName);
-		$this->userManager->expects($this->at(1))
+		$this->userManager->expects($this->exactly(2))
 			->method('get')
-			->with($uid)
-			->willReturn($u);
+			->withConsecutive(
+				['recipient'],
+				[$uid]
+			)
+			->willReturnOnConsecutiveCalls(
+				$recipient,
+				$u
+			);
 
 		$n->expects($this->once())
 			->method('setIcon')
@@ -172,7 +185,7 @@ class NotifierTest extends \Test\TestCase {
 			->willReturnSelf();
 		$n->expects($this->once())
 			->method('setRichSubject')
-			->with('{user} invited you to a private conversation',[
+			->with('{user} invited you to a private conversation', [
 				'user' => [
 					'type' => 'user',
 					'id' => $uid,
@@ -199,20 +212,136 @@ class NotifierTest extends \Test\TestCase {
 		$n->expects($this->once())
 			->method('getSubjectParameters')
 			->willReturn([$uid]);
-		$n->expects($this->once())
+		$n->expects($this->exactly(2))
 			->method('getObjectType')
 			->willReturn('room');
-		$n->expects($this->once())
-			->method('getObjectId')
+		$n->method('getObjectId')
 			->willReturn('roomToken');
 
 		$this->notifier->prepare($n, 'de');
 	}
 
+	/**
+	 * @dataProvider dataPrepareOne2One
+	 * @param string $uid
+	 * @param string $displayName
+	 * @param string $parsedSubject
+	 */
+	public function testPreparingMultipleTimesOnlyGetsTheRoomOnce($uid, $displayName, $parsedSubject) {
+		$numNotifications = 4;
+
+		$l = $this->createMock(IL10N::class);
+		$l->expects($this->any())
+			->method('t')
+			->will($this->returnCallback(function ($text, $parameters = []) {
+				return vsprintf($text, $parameters);
+			}));
+
+		$room = $this->createMock(Room::class);
+		$room->expects($this->any())
+			->method('getType')
+			->willReturn(Room::TYPE_ONE_TO_ONE);
+		$room->expects($this->any())
+			->method('getId')
+			->willReturn(1234);
+		$room->expects($this->any())
+			->method('getDisplayName')
+			->with('recipient')
+			->willReturn($displayName);
+		$this->manager->expects($this->once())
+			->method('getRoomByToken')
+			->with('roomToken')
+			->willReturn($room);
+
+		$participant = $this->createMock(Participant::class);
+		$room->expects($this->once())
+			->method('getParticipant')
+			->with('recipient')
+			->willReturn($participant);
+
+		$this->lFactory->expects($this->exactly($numNotifications))
+			->method('get')
+			->with('spreed', 'de')
+			->willReturn($l);
+
+		$recipient = $this->createMock(IUser::class);
+		$u = $this->createMock(IUser::class);
+		$u->expects($this->exactly($numNotifications * 2))
+			->method('getDisplayName')
+			->willReturn($displayName);
+		$this->userManager->expects($this->any())
+			->method('get')
+			->willReturnMap([
+				['recipient', $recipient],
+				[$uid, $u],
+			]);
+
+		$n = $this->getNotificationMock($parsedSubject, $uid, $displayName);
+		$this->notifier->prepare($n, 'de');
+		$n = $this->getNotificationMock($parsedSubject, $uid, $displayName);
+		$this->notifier->prepare($n, 'de');
+		$n = $this->getNotificationMock($parsedSubject, $uid, $displayName);
+		$this->notifier->prepare($n, 'de');
+		$n = $this->getNotificationMock($parsedSubject, $uid, $displayName);
+		$this->notifier->prepare($n, 'de');
+	}
+
+	public function getNotificationMock(string $parsedSubject, string $uid, string $displayName) {
+		/** @var INotification|MockObject $n */
+		$n = $this->createMock(INotification::class);
+		$n->expects($this->once())
+			->method('setIcon')
+			->willReturnSelf();
+		$n->expects($this->once())
+			->method('setLink')
+			->willReturnSelf();
+		$n->expects($this->once())
+			->method('setParsedSubject')
+			->with($parsedSubject)
+			->willReturnSelf();
+		$n->expects($this->once())
+			->method('setRichSubject')
+			->with('{user} invited you to a private conversation', [
+				'user' => [
+					'type' => 'user',
+					'id' => $uid,
+					'name' => $displayName,
+				],
+				'call' => [
+					'type' => 'call',
+					'id' => 1234,
+					'name' => $displayName,
+					'call-type' => 'one2one'
+				],
+			])
+			->willReturnSelf();
+
+
+		$n->expects($this->exactly(2))
+			->method('getUser')
+			->willReturn('recipient');
+		$n->expects($this->once())
+			->method('getApp')
+			->willReturn('spreed');
+		$n->expects($this->once())
+			->method('getSubject')
+			->willReturn('invitation');
+		$n->expects($this->once())
+			->method('getSubjectParameters')
+			->willReturn([$uid]);
+		$n->expects($this->exactly(2))
+			->method('getObjectType')
+			->willReturn('room');
+		$n->method('getObjectId')
+			->willReturn('roomToken');
+
+		return $n;
+	}
+
 	public function dataPrepareGroup() {
 		return [
-			[Room::GROUP_CALL, 'admin', 'Admin', 'Group', 'Admin invited you to a group conversation: Group'],
-			[Room::PUBLIC_CALL, 'test', 'Test user', 'Public', 'Test user invited you to a group conversation: Public'],
+			[Room::TYPE_GROUP, 'admin', 'Admin', 'Group', 'Admin invited you to a group conversation: Group'],
+			[Room::TYPE_PUBLIC, 'test', 'Test user', 'Public', 'Test user invited you to a group conversation: Public'],
 		];
 	}
 
@@ -254,18 +383,20 @@ class NotifierTest extends \Test\TestCase {
 			->willReturn($l);
 
 		$recipient = $this->createMock(IUser::class);
-		$this->userManager->expects($this->at(0))
-			->method('get')
-			->with('recipient')
-			->willReturn($recipient);
 		$u = $this->createMock(IUser::class);
 		$u->expects($this->exactly(2))
 			->method('getDisplayName')
 			->willReturn($displayName);
-		$this->userManager->expects($this->at(1))
+		$this->userManager->expects($this->exactly(2))
 			->method('get')
-			->with($uid)
-			->willReturn($u);
+			->withConsecutive(
+				['recipient'],
+				[$uid]
+			)
+			->willReturnOnConsecutiveCalls(
+				$recipient,
+				$u
+			);
 
 		$n->expects($this->once())
 			->method('setIcon')
@@ -278,14 +409,14 @@ class NotifierTest extends \Test\TestCase {
 			->with($parsedSubject)
 			->willReturnSelf();
 
-		$room->expects($this->once())
+		$room->expects($this->exactly(2))
 			->method('getId')
 			->willReturn($roomId);
 
-		if ($type === Room::GROUP_CALL) {
+		if ($type === Room::TYPE_GROUP) {
 			$n->expects($this->once())
 				->method('setRichSubject')
-				->with('{user} invited you to a group conversation: {call}',[
+				->with('{user} invited you to a group conversation: {call}', [
 					'user' => [
 						'type' => 'user',
 						'id' => $uid,
@@ -330,11 +461,10 @@ class NotifierTest extends \Test\TestCase {
 		$n->expects($this->once())
 			->method('getSubjectParameters')
 			->willReturn([$uid]);
-		$n->expects($this->once())
+		$n->expects($this->exactly(2))
 			->method('getObjectType')
 			->willReturn('room');
-		$n->expects($this->once())
-			->method('getObjectId')
+		$n->method('getObjectId')
 			->willReturn('roomToken');
 
 		$this->notifier->prepare($n, 'de');
@@ -342,238 +472,383 @@ class NotifierTest extends \Test\TestCase {
 
 	public function dataPrepareChatMessage(): array {
 		return [
-			[
-				$isMention = true, Room::ONE_TO_ONE_CALL, ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Test user',
+			'one-to-one mention' => [
+				$subject = 'mention', Room::TYPE_ONE_TO_ONE, ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Test user',
 				'Test user mentioned you in a private conversation',
-				['{user} mentioned you in a private conversation',
+				[
+					'{user} mentioned you in a private conversation',
 					[
 						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
 						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Test user', 'call-type' => 'one2one'],
-					]
+					],
 				],
 			],
-			[
-				$isMention = true, Room::GROUP_CALL,      ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
+			'user mention' => [
+				$subject = 'mention', Room::TYPE_GROUP,      ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
 				'Test user mentioned you in conversation Room name',
-				['{user} mentioned you in conversation {call}',
+				[
+					'{user} mentioned you in conversation {call}',
 					[
 						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
 						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group'],
-					]
+					],
 				],
 			],
-			[
-				$isMention = true, Room::GROUP_CALL,      ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
+			'deleted user mention' => [
+				$subject = 'mention', Room::TYPE_GROUP,      ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
 				'A deleted user mentioned you in conversation Room name',
-				['A deleted user mentioned you in conversation {call}',
+				[
+					'A deleted user mentioned you in conversation {call}',
 					[
 						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group'],
-					]
+					],
 				],
-				$deletedUser = true],
-			[
-				$isMention = true, Room::GROUP_CALL,      ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
-				'Test user mentioned you in conversation Room name',
-				['{user} mentioned you in conversation {call}',
-					[
-						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group']
-					]
-				],
+				$deletedUser = true,
 			],
-			[
-				$isMention = true, Room::GROUP_CALL,      ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
-				'A deleted user mentioned you in conversation Room name',
-				['A deleted user mentioned you in conversation {call}',
-					[
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group']
-					]
-				],
-				$deletedUser = true],
-			[
-				$isMention = true, Room::PUBLIC_CALL,     ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
+			'user mention public' => [
+				$subject = 'mention', Room::TYPE_PUBLIC,     ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
 				'Test user mentioned you in conversation Room name',
-				['{user} mentioned you in conversation {call}',
+				[
+					'{user} mentioned you in conversation {call}',
 					[
 						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
 						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
-					]
+					],
 				],
 			],
-			[
-				$isMention = true, Room::PUBLIC_CALL,     ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
+			'deleted user mention public' => [
+				$subject = 'mention', Room::TYPE_PUBLIC,     ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
 				'A deleted user mentioned you in conversation Room name',
-				['A deleted user mentioned you in conversation {call}',
+				[
+					'A deleted user mentioned you in conversation {call}',
 					[
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public']
-					]
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+					],
 				],
-				$deletedUser = true],
-			[
-				$isMention = true, Room::PUBLIC_CALL,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,        'Room name',
+				$deletedUser = true,
+			],
+			'guest mention' => [
+				$subject = 'mention', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,        'Room name',
 				'A guest mentioned you in conversation Room name',
-				['A guest mentioned you in conversation {call}',
+				[
+					'A guest mentioned you in conversation {call}',
 					[
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public']
-					]
-				], false, null
-			],
-			[
-				$isMention = true, Room::PUBLIC_CALL,     ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
-				'Test user mentioned you in conversation Room name',
-				['{user} mentioned you in conversation {call}',
-					[
-						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public']
-					]
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+					],
 				],
+				$deletedUser = false, $guestName = null,
 			],
-			[
-				$isMention = true, Room::PUBLIC_CALL,     ['userType' => 'users', 'userId' => 'testUser'], null,    'Room name',
-				'A deleted user mentioned you in conversation Room name',
-				['A deleted user mentioned you in conversation {call}',
-					[
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public']
-					]
-				],
-				$deletedUser = true],
-			[
-				$isMention = true, Room::PUBLIC_CALL,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
+			'named guest mention' => [
+				$subject = 'mention', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
 				'MyNameIs (guest) mentioned you in conversation Room name',
-				['{guest} (guest) mentioned you in conversation {call}',
+				[
+					'{guest} (guest) mentioned you in conversation {call}',
 					[
 						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
 						'guest' => ['type' => 'guest', 'id' => 'random-hash', 'name' => 'MyNameIs'],
 					]
-				], false, 'MyNameIs'
+				],
+				$deletedUser = false, $guestName = 'MyNameIs',
 			],
-			[
-				$isMention = true, Room::PUBLIC_CALL,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
+			'empty named guest mention' => [
+				$subject = 'mention', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
 				'A guest mentioned you in conversation Room name',
-				['A guest mentioned you in conversation {call}',
-					['call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public']]
-				], false, ''
+				[
+					'A guest mentioned you in conversation {call}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+					],
+				],
+				$deletedUser = false, $guestName = '',
 			],
 
 			// Normal messages
-			[
-				$isMention = false, Room::ONE_TO_ONE_CALL, ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Test user',
+			'one-to-one message' => [
+				$subject = 'chat', Room::TYPE_ONE_TO_ONE, ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Test user',
 				'Test user sent you a private message',
-				['{user} sent you a private message',
+				[
+					'{user} sent you a private message',
 					[
 						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
 						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Test user', 'call-type' => 'one2one'],
-					]
+					],
 				],
 			],
-			[
-				$isMention = false, Room::GROUP_CALL,      ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
+			'user message' => [
+				$subject = 'chat', Room::TYPE_GROUP,      ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
 				'Test user sent a message in conversation Room name',
-				['{user} sent a message in conversation {call}',
+				[
+					'{user} sent a message in conversation {call}',
 					[
 						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
 						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group'],
-					]
+					],
 				],
 			],
-			[
-				$isMention = false, Room::GROUP_CALL,      ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
+			'deleted user message' => [
+				$subject = 'chat', Room::TYPE_GROUP,      ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
 				'A deleted user sent a message in conversation Room name',
-				['A deleted user sent a message in conversation {call}',
+				[
+					'A deleted user sent a message in conversation {call}',
 					[
 						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group'],
-					]
+					],
 				],
-				$deletedUser = true],
-			[
-				$isMention = false, Room::GROUP_CALL,      ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
-				'Test user sent a message in conversation Room name',
-				['{user} sent a message in conversation {call}',
-					[
-						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group']
-					]
-				],
+				$deletedUser = true,
 			],
-			[
-				$isMention = false, Room::GROUP_CALL,      ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
-				'A deleted user sent a message in conversation Room name',
-				['A deleted user sent a message in conversation {call}',
-					[
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group']
-					]
-				],
-				$deletedUser = true],
-			[
-				$isMention = false, Room::PUBLIC_CALL,     ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
+			'user message public' => [
+				$subject = 'chat', Room::TYPE_PUBLIC,     ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
 				'Test user sent a message in conversation Room name',
-				['{user} sent a message in conversation {call}',
+				[
+					'{user} sent a message in conversation {call}',
 					[
 						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
 						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
 					]
 				],
 			],
-			[
-				$isMention = false, Room::PUBLIC_CALL,     ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
+			'deleted user message public' => [
+				$subject = 'chat', Room::TYPE_PUBLIC,     ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
 				'A deleted user sent a message in conversation Room name',
-				['A deleted user sent a message in conversation {call}',
+				[
+					'A deleted user sent a message in conversation {call}',
 					[
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public']
-					]
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+					],
 				],
-				$deletedUser = true],
-			[
-				$isMention = false, Room::PUBLIC_CALL,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,        'Room name',
+				$deletedUser = true
+			],
+			'guest message' => [
+				$subject = 'chat', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,        'Room name',
 				'A guest sent a message in conversation Room name',
 				['A guest sent a message in conversation {call}',
 					[
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public']
-					]
-				], false, null
-			],
-			[
-				$isMention = false, Room::PUBLIC_CALL,     ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
-				'Test user sent a message in conversation Room name',
-				['{user} sent a message in conversation {call}',
-					[
-						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public']
-					]
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+					],
 				],
+				$deletedUser = false, $guestName = null,
 			],
-			[
-				$isMention = false, Room::PUBLIC_CALL,     ['userType' => 'users', 'userId' => 'testUser'], null,    'Room name',
-				'A deleted user sent a message in conversation Room name',
-				['A deleted user sent a message in conversation {call}',
-					[
-						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public']
-					]
-				],
-				$deletedUser = true],
-			[
-				$isMention = false, Room::PUBLIC_CALL,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
+			'named guest message' => [
+				$subject = 'chat', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
 				'MyNameIs (guest) sent a message in conversation Room name',
-				['{guest} (guest) sent a message in conversation {call}',
+				[
+					'{guest} (guest) sent a message in conversation {call}',
 					[
 						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
 						'guest' => ['type' => 'guest', 'id' => 'random-hash', 'name' => 'MyNameIs'],
-					]
-				], false, 'MyNameIs'
+					],
+				],
+				$deletedUser = false, $guestName = 'MyNameIs',
 			],
-			[
-				$isMention = false, Room::PUBLIC_CALL,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
+			'empty named guest message' => [
+				$subject = 'chat', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
 				'A guest sent a message in conversation Room name',
-				['A guest sent a message in conversation {call}',
-					['call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public']]
-				], false, ''
+				[
+					'A guest sent a message in conversation {call}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+					],
+				],
+				$deletedUser = false, $guestName = '',
+			],
+
+			// Reply
+			'one-to-one reply' => [
+				$subject = 'reply', Room::TYPE_ONE_TO_ONE, ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Test user',
+				'Test user replied to your private message',
+				[
+					'{user} replied to your private message',
+					[
+						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Test user', 'call-type' => 'one2one'],
+					],
+				],
+			],
+			'user reply' => [
+				$subject = 'reply', Room::TYPE_GROUP,      ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
+				'Test user replied to your message in conversation Room name',
+				[
+					'{user} replied to your message in conversation {call}',
+					[
+						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group'],
+					],
+				],
+			],
+			'deleted user reply' => [
+				$subject = 'reply', Room::TYPE_GROUP,      ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
+				'A deleted user replied to your message in conversation Room name',
+				[
+					'A deleted user replied to your message in conversation {call}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group'],
+					],
+				],
+				$deletedUser = true,
+			],
+			'user message reply' => [
+				$subject = 'reply', Room::TYPE_PUBLIC,     ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
+				'Test user replied to your message in conversation Room name',
+				[
+					'{user} replied to your message in conversation {call}',
+					[
+						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+					]
+				],
+			],
+			'deleted user message reply' => [
+				$subject = 'reply', Room::TYPE_PUBLIC,     ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
+				'A deleted user replied to your message in conversation Room name',
+				[
+					'A deleted user replied to your message in conversation {call}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+					],
+				],
+				$deletedUser = true
+			],
+			'guest reply' => [
+				$subject = 'reply', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,        'Room name',
+				'A guest replied to your message in conversation Room name',
+				['A guest replied to your message in conversation {call}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+					],
+				],
+				$deletedUser = false, $guestName = null,
+			],
+			'named guest reply' => [
+				$subject = 'reply', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
+				'MyNameIs (guest) replied to your message in conversation Room name',
+				[
+					'{guest} (guest) replied to your message in conversation {call}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+						'guest' => ['type' => 'guest', 'id' => 'random-hash', 'name' => 'MyNameIs'],
+					],
+				],
+				$deletedUser = false, $guestName = 'MyNameIs',
+			],
+			'empty named guest reply' => [
+				$subject = 'reply', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
+				'A guest replied to your message in conversation Room name',
+				[
+					'A guest replied to your message in conversation {call}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+					],
+				],
+				$deletedUser = false, $guestName = '',
+			],
+
+			// Push messages
+			'one-to-one push' => [
+				$subject = 'chat', Room::TYPE_ONE_TO_ONE, ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Test user',
+				'Test user' . "\n" . 'Hi @Administrator',
+				[
+					'{user}' . "\n" . '{message}',
+					[
+						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Test user', 'call-type' => 'one2one'],
+						'message' => ['type' => 'highlight', 'id' => '123456789', 'name' => 'Hi @Administrator'],
+					],
+				],
+				$deletedUser = false, $guestName = null, $isPushNotification = true,
+			],
+			'user push' => [
+				$subject = 'chat', Room::TYPE_GROUP,      ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
+				'Test user in Room name' . "\n" . 'Hi @Administrator',
+				[
+					'{user} in {call}' . "\n" . '{message}',
+					[
+						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group'],
+						'message' => ['type' => 'highlight', 'id' => '123456789', 'name' => 'Hi @Administrator'],
+					],
+				],
+				$deletedUser = false, $guestName = null, $isPushNotification = true,
+			],
+			'deleted user push' => [
+				$subject = 'chat', Room::TYPE_GROUP,      ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
+				'Deleted user in Room name' . "\n" . 'Hi @Administrator',
+				[
+					'Deleted user in {call}' . "\n" . '{message}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'group'],
+						'message' => ['type' => 'highlight', 'id' => '123456789', 'name' => 'Hi @Administrator'],
+					],
+				],
+				$deletedUser = true, $guestName = null, $isPushNotification = true,
+			],
+			'user push public' => [
+				$subject = 'chat', Room::TYPE_PUBLIC,     ['userType' => 'users', 'userId' => 'testUser'], 'Test user', 'Room name',
+				'Test user in Room name' . "\n" . 'Hi @Administrator',
+				[
+					'{user} in {call}' . "\n" . '{message}',
+					[
+						'user' => ['type' => 'user', 'id' => 'testUser', 'name' => 'Test user'],
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+						'message' => ['type' => 'highlight', 'id' => '123456789', 'name' => 'Hi @Administrator'],
+					],
+				],
+				$deletedUser = false, $guestName = null, $isPushNotification = true,
+			],
+			'deleted user push public' => [
+				$subject = 'chat', Room::TYPE_PUBLIC,     ['userType' => 'users', 'userId' => 'testUser'], null,        'Room name',
+				'Deleted user in Room name' . "\n" . 'Hi @Administrator',
+				[
+					'Deleted user in {call}' . "\n" . '{message}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+						'message' => ['type' => 'highlight', 'id' => '123456789', 'name' => 'Hi @Administrator'],
+					],
+				],
+				$deletedUser = true, $guestName = null, $isPushNotification = true,
+			],
+			'guest push public' => [
+				$subject = 'chat', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,        'Room name',
+				'Guest in Room name' . "\n" . 'Hi @Administrator',
+				[
+					'Guest in {call}' . "\n" . '{message}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+						'message' => ['type' => 'highlight', 'id' => '123456789', 'name' => 'Hi @Administrator'],
+					],
+				],
+				$deletedUser = false, $guestName = null, $isPushNotification = true,
+			],
+			'named guest push public' => [
+				$subject = 'chat', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
+				'MyNameIs (guest) in Room name' . "\n" . 'Hi @Administrator',
+				[
+					'{guest} (guest) in {call}' . "\n" . '{message}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+						'guest' => ['type' => 'guest', 'id' => 'random-hash', 'name' => 'MyNameIs'],
+						'message' => ['type' => 'highlight', 'id' => '123456789', 'name' => 'Hi @Administrator'],
+					],
+				],
+				$deletedUser = false, $guestName = 'MyNameIs', $isPushNotification = true,
+			],
+			'empty named guest push public' => [
+				$subject = 'chat', Room::TYPE_PUBLIC,     ['userType' => 'guests', 'userId' => 'testSpreedSession'], null,    'Room name',
+				'Guest in Room name' . "\n" . 'Hi @Administrator',
+				[
+					'Guest in {call}' . "\n" . '{message}',
+					[
+						'call' => ['type' => 'call', 'id' => 1234, 'name' => 'Room name', 'call-type' => 'public'],
+						'message' => ['type' => 'highlight', 'id' => '123456789', 'name' => 'Hi @Administrator'],
+					],
+				],
+				$deletedUser = false, $guestName = '', $isPushNotification = true,
 			],
 		];
 	}
 
 	/**
 	 * @dataProvider dataPrepareChatMessage
-	 * @param bool $isMention
+	 * @param string $subject
 	 * @param int $roomType
 	 * @param array $subjectParameters
 	 * @param string $displayName
@@ -583,7 +858,7 @@ class NotifierTest extends \Test\TestCase {
 	 * @param bool $deletedUser
 	 * @param null|string $guestName
 	 */
-	public function testPrepareChatMessage(bool $isMention, int $roomType, array $subjectParameters, $displayName, string $roomName, string $parsedSubject, array $richSubject, bool $deletedUser = false, ?string $guestName = null) {
+	public function testPrepareChatMessage(string $subject, int $roomType, array $subjectParameters, $displayName, string $roomName, string $parsedSubject, array $richSubject, bool $deletedUser = false, ?string $guestName = null, bool $isPushNotification = false) {
 		/** @var INotification|MockObject $notification */
 		$notification = $this->createMock(INotification::class);
 		$l = $this->createMock(IL10N::class);
@@ -592,6 +867,9 @@ class NotifierTest extends \Test\TestCase {
 			->will($this->returnCallback(function ($text, $parameters = []) {
 				return vsprintf($text, $parameters);
 			}));
+
+		$this->notificationManager->method('isPreparingPushNotification')
+			->willReturn($isPushNotification);
 
 		$room = $this->createMock(Room::class);
 		$room->expects($this->atLeastOnce())
@@ -627,58 +905,65 @@ class NotifierTest extends \Test\TestCase {
 			->willReturn($l);
 
 		$recipient = $this->createMock(IUser::class);
-		$this->userManager->expects($this->at(0))
-			->method('get')
-			->with('recipient')
-			->willReturn($recipient);
+		$userManagerGet['with'][] = ['recipient'];
+		$userManagerGet['willReturn'][] = $recipient;
 
 		$user = $this->createMock(IUser::class);
 		if ($subjectParameters['userType'] === 'users' && !$deletedUser) {
 			$user->expects($this->once())
 				->method('getDisplayName')
 				->willReturn($displayName);
-			$this->userManager->expects($this->at(1))
-				->method('get')
-				->with($subjectParameters['userId'])
-				->willReturn($user);
+			$userManagerGet['with'][] = [$subjectParameters['userId']];
+			$userManagerGet['willReturn'][] = $user;
 		} elseif ($subjectParameters['userType'] === 'users' && $deletedUser) {
 			$user->expects($this->never())
 				->method('getDisplayName');
-			$this->userManager->expects($this->at(1))
-				->method('get')
-				->with($subjectParameters['userId'])
-				->willReturn(null);
+			$userManagerGet['with'][] = [$subjectParameters['userId']];
+			$userManagerGet['willReturn'][] = null;
 		} else {
 			$user->expects($this->never())
 				->method('getDisplayName');
 		}
+		$this->userManager->expects($this->exactly(count($userManagerGet['with'])))
+			->method('get')
+			->withConsecutive(...$userManagerGet['with'])
+			->willReturnOnConsecutiveCalls(...$userManagerGet['willReturn']);
 
 		$comment = $this->createMock(IComment::class);
 		$comment->expects($this->any())
 			->method('getActorId')
 			->willReturn('random-hash');
+		$comment->expects($this->any())
+			->method('getId')
+			->willReturn('123456789');
 		$this->commentsManager->expects($this->once())
 			->method('get')
 			->with('23')
 			->willReturn($comment);
 
 		if (is_string($guestName)) {
-			$this->guestManager->expects($this->once())
-				->method('getNameBySessionHash')
-				->with('random-hash')
-				->willReturn($guestName);
+			$room->method('getParticipantByActor')
+				->with(Attendee::ACTOR_GUESTS, 'random-hash')
+				->willReturn($participant);
+
+			$attendee = Attendee::fromRow([
+				'actor_type' => 'guests',
+				'actor_id' => 'random-hash',
+				'display_name' => $guestName,
+			]);
+			$participant->method('getAttendee')
+				->willReturn($attendee);
 		} else {
-			$this->guestManager->expects($this->any())
-				->method('getNameBySessionHash')
-				->with('random-hash')
+			$room->method('getParticipantByActor')
+				->with(Attendee::ACTOR_GUESTS, 'random-hash')
 				->willThrowException(new ParticipantNotFoundException());
 		}
 
 		$chatMessage = $this->createMock(Message::class);
-		$chatMessage->expects($this->exactly(2))
+		$chatMessage->expects($this->atLeastOnce())
 			->method('getMessage')
 			->willReturn('Hi {mention-user1}');
-		$chatMessage->expects($this->exactly(2))
+		$chatMessage->expects($this->atLeastOnce())
 			->method('getMessageParameters')
 			->willReturn([
 				'mention-user1' => [
@@ -690,6 +975,8 @@ class NotifierTest extends \Test\TestCase {
 		$chatMessage->expects($this->once())
 			->method('getVisibility')
 			->willReturn(true);
+		$chatMessage->method('getComment')
+			->willReturn($comment);
 
 		$this->messageParser->expects($this->once())
 			->method('createMessage')
@@ -713,10 +1000,15 @@ class NotifierTest extends \Test\TestCase {
 			->method('setRichSubject')
 			->with($richSubject[0], $richSubject[1])
 			->willReturnSelf();
-		$notification->expects($this->once())
-			->method('setParsedMessage')
-			->with('Hi @Administrator')
-			->willReturnSelf();
+		if ($isPushNotification) {
+			$notification->expects($this->never())
+				->method('setParsedMessage');
+		} else {
+			$notification->expects($this->once())
+				->method('setParsedMessage')
+				->with('Hi @Administrator')
+				->willReturnSelf();
+		}
 
 		$notification->expects($this->exactly(2))
 			->method('getUser')
@@ -726,15 +1018,14 @@ class NotifierTest extends \Test\TestCase {
 			->willReturn('spreed');
 		$notification->expects($this->atLeast(2))
 			->method('getSubject')
-			->willReturn($isMention ? 'mention'  : 'chat');
+			->willReturn($subject);
 		$notification->expects($this->once())
 			->method('getSubjectParameters')
 			->willReturn($subjectParameters);
-		$notification->expects($this->once())
+		$notification->expects($this->exactly(2))
 			->method('getObjectType')
 			->willReturn('chat');
-		$notification->expects($this->once())
-			->method('getObjectId')
+		$notification->method('getObjectId')
 			->willReturn('roomToken');
 		$notification->expects($this->once())
 			->method('getMessageParameters')
@@ -747,7 +1038,8 @@ class NotifierTest extends \Test\TestCase {
 		return [
 			['Incorrect app', 'invalid-app', null, null, null, null, null],
 			'User can not use Talk' => [AlreadyProcessedException::class, 'spreed', true, null, null, null, null],
-			'Invalid room' => [AlreadyProcessedException::class, 'spreed', false, false, null, null, null],
+			'Invalid room' => [AlreadyProcessedException::class, 'spreed', false, false, null, null, null, '12345'],
+			'Invalid room without token' => [AlreadyProcessedException::class, 'spreed', false, false, null, null, null],
 			['Unknown subject', 'spreed', false, true, 'invalid-subject', null, null],
 			['Unknown object type', 'spreed', false, true, 'invitation', null, 'invalid-object-type'],
 			'Calling user does not exist anymore' => [AlreadyProcessedException::class, 'spreed', false, true, 'invitation', ['admin'], 'room'],
@@ -765,8 +1057,9 @@ class NotifierTest extends \Test\TestCase {
 	 * @param string|null $subject
 	 * @param array|null $params
 	 * @param string|null $objectType
+	 * @param string $token
 	 */
-	public function testPrepareThrows($message, $app, $isDisabledForUser, $validRoom, $subject, $params, $objectType) {
+	public function testPrepareThrows($message, $app, $isDisabledForUser, $validRoom, $subject, $params, $objectType, $token = 'roomToken') {
 		/** @var INotification|MockObject $n */
 		$n = $this->createMock(INotification::class);
 		$l = $this->createMock(IL10N::class);
@@ -778,22 +1071,20 @@ class NotifierTest extends \Test\TestCase {
 			$room = $this->createMock(Room::class);
 			$room->expects($this->never())
 				->method('getType');
-			$n->expects($this->once())
-				->method('getObjectId')
-				->willReturn('roomToken');
+			$n->method('getObjectId')
+				->willReturn($token);
 			$this->manager->expects($this->once())
 				->method('getRoomByToken')
-				->with('roomToken')
+				->with($token)
 				->willReturn($room);
 		} elseif ($validRoom === false) {
-			$n->expects($this->exactly(2))
-				->method('getObjectId')
-				->willReturn('roomToken');
+			$n->method('getObjectId')
+				->willReturn($token);
 			$this->manager->expects($this->once())
 				->method('getRoomByToken')
-				->with('roomToken')
+				->with($token)
 				->willThrowException(new RoomNotFoundException());
-			$this->manager->expects($this->once())
+			$this->manager->expects($token !== 'roomToken' ? $this->once() : $this->never())
 				->method('getRoomById')
 				->willThrowException(new RoomNotFoundException());
 		}
@@ -849,11 +1140,15 @@ class NotifierTest extends \Test\TestCase {
 				->method('getSubjectParameters')
 				->willReturn($params);
 		}
-		if ($objectType === null) {
+		if (($objectType === null && $app !== 'spreed') || $isDisabledForUser) {
 			$n->expects($this->never())
 				->method('getObjectType');
-		} else {
+		} elseif ($objectType === null && $app === 'spreed') {
 			$n->expects($this->once())
+				->method('getObjectType')
+				->willReturn('');
+		} else {
+			$n->expects($this->exactly(2))
 				->method('getObjectType')
 				->willReturn($objectType);
 		}

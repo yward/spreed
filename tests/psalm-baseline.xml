@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<files psalm-version="4.22.0@fc2c6ab4d5fa5d644d8617089f012f3bb84b8703">
+  <file src="lib/AppInfo/Application.php">
+    <UndefinedClass occurrences="2">
+      <code>BeforeTemplateRenderedEvent</code>
+      <code>BeforeTemplateRenderedEvent</code>
+    </UndefinedClass>
+    <UndefinedInterfaceMethod occurrences="1">
+      <code>getSettingsManager</code>
+    </UndefinedInterfaceMethod>
+  </file>
+  <file src="lib/BackgroundJob/CheckReferenceIdColumn.php">
+    <UndefinedClass occurrences="1">
+      <code>SchemaWrapper</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Chat/ChatManager.php">
+    <UndefinedClass occurrences="1">
+      <code>NullCache</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Chat/MessageParser.php">
+    <UndefinedVariable occurrences="1">
+      <code>$guestNames</code>
+    </UndefinedVariable>
+  </file>
+  <file src="lib/Chat/Parser/SystemMessage.php">
+    <MissingDependency occurrences="3">
+      <code>$this-&gt;rootFolder</code>
+      <code>IRootFolder</code>
+      <code>IRootFolder</code>
+    </MissingDependency>
+    <UndefinedClass occurrences="1">
+      <code>\OC_Util</code>
+    </UndefinedClass>
+    <UndefinedInterfaceMethod occurrences="1">
+      <code>getById</code>
+    </UndefinedInterfaceMethod>
+  </file>
+  <file src="lib/Command/ActiveCalls.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Command/Add.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Command/AddSamples.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Command/Delete.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Command/ListCommand.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Command/Update.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Room/Add.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Room/Create.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Room/Delete.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Room/Demote.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Room/Promote.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Room/Remove.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Room/Update.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Signaling/Add.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Signaling/Delete.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Signaling/ListCommand.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Stun/Add.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Stun/Delete.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Stun/ListCommand.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Turn/Add.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Turn/Delete.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/Turn/ListCommand.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Command/User/Remove.php">
+    <UndefinedClass occurrences="1">
+      <code>Base</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Config.php">
+    <NullArgument occurrences="1">
+      <code>null</code>
+    </NullArgument>
+  </file>
+  <file src="lib/Controller/ChatController.php">
+    <InvalidArrayOffset occurrences="1">
+      <code>$commentIdToIndex[$parentId]</code>
+    </InvalidArrayOffset>
+  </file>
+  <file src="lib/Controller/PageController.php">
+    <MissingDependency occurrences="2">
+      <code>IRootFolder</code>
+      <code>IRootFolder</code>
+    </MissingDependency>
+  </file>
+  <file src="lib/Controller/SettingsController.php">
+    <InvalidArgument occurrences="1">
+      <code>SharedStorage::class</code>
+    </InvalidArgument>
+    <MissingDependency occurrences="3">
+      <code>$this-&gt;rootFolder</code>
+      <code>IRootFolder</code>
+      <code>IRootFolder</code>
+    </MissingDependency>
+  </file>
+  <file src="lib/Controller/SignalingController.php">
+    <UndefinedClass occurrences="1">
+      <code>ConnectException</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Controller/TempAvatarController.php">
+    <UndefinedClass occurrences="1">
+      <code>Filesystem</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Files/TemplateLoader.php">
+    <MissingDependency occurrences="2">
+      <code>IRootFolder</code>
+      <code>IRootFolder</code>
+    </MissingDependency>
+    <UndefinedClass occurrences="2">
+      <code>LoadSidebar</code>
+      <code>LoadSidebar</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Files/Util.php">
+    <InvalidArgument occurrences="1">
+      <code>SharedStorage::class</code>
+    </InvalidArgument>
+    <MissingDependency occurrences="5">
+      <code>$this-&gt;rootFolder</code>
+      <code>$this-&gt;rootFolder</code>
+      <code>$this-&gt;rootFolder</code>
+      <code>IRootFolder</code>
+      <code>IRootFolder</code>
+    </MissingDependency>
+  </file>
+  <file src="lib/MatterbridgeManager.php">
+    <UndefinedClass occurrences="7">
+      <code>$this-&gt;tokenProvider</code>
+      <code>$this-&gt;tokenProvider</code>
+      <code>$this-&gt;tokenProvider</code>
+      <code>IAuthTokenProvider</code>
+      <code>IAuthTokenProvider</code>
+      <code>IToken</code>
+      <code>IToken</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Middleware/InjectionMiddleware.php">
+    <UndefinedInterfaceMethod occurrences="1">
+      <code>getAnnotationParameter</code>
+    </UndefinedInterfaceMethod>
+  </file>
+  <file src="lib/Migration/Version2001Date20170707115443.php">
+    <InvalidArrayAccess occurrences="1">
+      <code>$return['num_rooms']</code>
+    </InvalidArrayAccess>
+  </file>
+  <file src="lib/Notification/Notifier.php">
+    <InvalidPropertyAssignmentValue occurrences="3">
+      <code>$this-&gt;participants</code>
+      <code>$this-&gt;rooms</code>
+      <code>$this-&gt;rooms</code>
+    </InvalidPropertyAssignmentValue>
+  </file>
+  <file src="lib/PublicShare/TemplateLoader.php">
+    <UndefinedClass occurrences="1">
+      <code>BeforeTemplateRenderedEvent</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/PublicShareAuth/TemplateLoader.php">
+    <UndefinedClass occurrences="1">
+      <code>BeforeTemplateRenderedEvent</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Share/Listener.php">
+    <InvalidArgument occurrences="1">
+      <code>[self::class, 'listenPreShare']</code>
+    </InvalidArgument>
+    <UndefinedClass occurrences="7">
+      <code>$event-&gt;getView()</code>
+      <code>$event-&gt;getView()</code>
+      <code>$event-&gt;getView()</code>
+      <code>$view</code>
+      <code>$view</code>
+      <code>$view</code>
+      <code>Filesystem</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Share/RoomShareProvider.php">
+    <UndefinedClass occurrences="1">
+      <code>Cache</code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/TInitialState.php">
+    <MissingDependency occurrences="1">
+      <code>IRootFolder</code>
+    </MissingDependency>
+  </file>
+</files>

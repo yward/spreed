@@ -23,37 +23,34 @@
 	<div class="set-contacts">
 		<!-- Search -->
 		<div class="icon-search" />
-		<input
-			ref="setContacts"
+		<input ref="setContacts"
 			v-model="searchText"
 			v-observe-visibility="visibilityChanged"
 			class="set-contacts__input"
 			type="text"
 			:placeholder="t('spreed', 'Search participants')"
 			@input="handleInput">
-		<transition-group
-			v-if="hasSelectedParticipants"
+		<transition-group v-if="hasSelectedParticipants"
 			name="zoom"
 			tag="div"
 			class="selected-participants">
-			<ContactSelectionBubble
-				v-for="participant in selectedParticipants"
+			<ContactSelectionBubble v-for="participant in selectedParticipants"
 				:key="participant.source + participant.id"
 				:participant="participant" />
 		</transition-group>
-		<ParticipantSearchResults
-			:add-on-click="false"
+		<ParticipantSearchResults :add-on-click="false"
 			:search-results="searchResults"
 			:contacts-loading="contactsLoading"
 			:no-results="noResults"
 			:scrollable="true"
 			:display-search-hint="displaySearchHint"
 			:selectable="true"
-			@clickSearchHint="focusInput" />
+			@click-search-hint="focusInput" />
 	</div>
 </template>
 
 <script>
+import CancelableRequest from '../../../../utils/cancelableRequest'
 import debounce from 'debounce'
 import { showError } from '@nextcloud/dialogs'
 import { searchPossibleConversations } from '../../../../services/conversationsService'
@@ -82,6 +79,7 @@ export default {
 			// with an empty screen as search text.
 			contactsLoading: true,
 			noResults: false,
+			cancelSearchPossibleConversations: () => {},
 		}
 	},
 
@@ -95,8 +93,9 @@ export default {
 		/**
 		 * Search hint at the bottom of the participants list, displayed only if
 		 * the user is not searching
-		 * @returns {boolean}
-		 **/
+		 *
+		 * @return {boolean}
+		 */
 		displaySearchHint() {
 			return !this.contactsLoading && this.searchText === ''
 		},
@@ -109,6 +108,11 @@ export default {
 		await this.fetchSearchResults()
 		// Once the contacts are fetched, remove the spinner.
 		this.contactsLoading = false
+	},
+
+	beforeDestroy() {
+		this.cancelSearchPossibleConversations()
+		this.cancelSearchPossibleConversations = null
 	},
 
 	methods: {
@@ -125,13 +129,21 @@ export default {
 
 		async fetchSearchResults() {
 			try {
-				const response = await searchPossibleConversations(this.searchText)
-				this.searchResults = response.data.ocs.data
+				this.cancelSearchPossibleConversations('canceled')
+				const { request, cancel } = CancelableRequest(searchPossibleConversations)
+				this.cancelSearchPossibleConversations = cancel
+
+				const response = await request({ searchText: this.searchText })
+
+				this.searchResults = response?.data?.ocs?.data || []
 				this.contactsLoading = false
 				if (this.searchResults.length === 0) {
 					this.noResults = true
 				}
 			} catch (exception) {
+				if (CancelableRequest.isCancel(exception)) {
+					return
+				}
 				console.error(exception)
 				showError(t('spreed', 'An error occurred while performing the search'))
 			}

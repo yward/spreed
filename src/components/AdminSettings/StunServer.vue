@@ -22,6 +22,8 @@
 
 <template>
 	<div class="stun-server">
+		<!-- "stun:" scheme is untranslated -->
+		<span class="scheme">stun:</span>
 		<input ref="stun_server"
 			type="text"
 			name="stun_server"
@@ -71,9 +73,9 @@ export default {
 
 			// Remove HTTP or HTTPS protocol, if provided
 			if (server.startsWith('https://')) {
-				server = server.substr(8)
+				server = server.slice(8)
 			} else if (server.startsWith('http://')) {
-				server = server.substr(7)
+				server = server.slice(7)
 			}
 
 			const parts = server.split(':')
@@ -86,7 +88,7 @@ export default {
 
 	methods: {
 		removeServer() {
-			this.$emit('removeServer', this.index)
+			this.$emit('remove-server', this.index)
 		},
 		update(event) {
 			this.$emit('update:server', event.target.value)
@@ -96,6 +98,11 @@ export default {
 </script>
 
 <style lang="scss" scoped>
+.scheme {
+	/* Same margin as inputs to keep the style. */
+	margin: 3px 3px 3px 0;
+}
+
 .stun-server {
 	height: 44px;
 	display: flex;

@@ -25,76 +25,202 @@ the main body of the message as well as a quote.
 </docs>
 
 <template>
-	<div
+	<li :id="`message_${id}`"
+		ref="message"
+		:data-message-id="id"
+		:data-seen="seen"
+		:data-next-message-id="nextMessageId"
+		:data-previous-message-id="previousMessageId"
 		class="message"
-		:class="{'hover': showActions && !isSystemMessage, 'system' : isSystemMessage}"
-		@mouseover="showActions=true"
-		@mouseleave="showActions=false">
-		<div v-if="isFirstMessage && showAuthor" class="message__author">
-			<h6>{{ actorDisplayName }}</h6>
-		</div>
-		<div
-			ref="messageMain"
-			class="message__main">
-			<div v-if="isSingleEmoji"
-				class="message__main__text">
-				<Quote v-if="parent" v-bind="quote" />
-				<div class="single-emoji">
-					{{ message }}
+		tabindex="0"
+		@mouseover="handleMouseover"
+		@mouseleave="handleMouseleave">
+		<div :class="{'normal-message-body': !isSystemMessage && !isDeletedMessage, 'system' : isSystemMessage}"
+			class="message-body">
+			<div v-if="isFirstMessage && showAuthor"
+				class="message-body__author"
+				aria-level="4">
+				{{ actorDisplayName }}
+			</div>
+			<div ref="messageMain"
+				class="message-body__main">
+				<div v-if="isSingleEmoji"
+					class="message-body__main__text">
+					<Quote v-if="parent" :parent-id="parent" v-bind="quote" />
+					<div class="single-emoji">
+						{{ message }}
+					</div>
+				</div>
+				<div v-else-if="showJoinCallButton" class="message-body__main__text call-started">
+					<RichText :text="message" :arguments="richParameters" :autolink="true" />
+					<CallButton />
+				</div>
+				<div v-else-if="isDeletedMessage" class="message-body__main__text deleted-message">
+					<RichText :text="message" :arguments="richParameters" :autolink="true" />
+				</div>
+				<div v-else class="message-body__main__text" :class="{'system-message': isSystemMessage}">
+					<Quote v-if="parent" :parent-id="parent" v-bind="quote" />
+					<RichText :text="message" :arguments="richParameters" :autolink="true" />
+				</div>
+				<div v-if="!isDeletedMessage" class="message-body__main__right">
+					<span v-tooltip.auto="messageDate"
+						class="date"
+						:style="{'visibility': hasDate ? 'visible' : 'hidden'}"
+						:class="{'date--self': showSentIcon}">{{ messageTime }}</span>
+
+					<!-- Message delivery status indicators -->
+					<div v-if="sendingFailure"
+						v-tooltip.auto="sendingErrorIconTooltip"
+						class="message-status sending-failed"
+						:class="{'retry-option': sendingErrorCanRetry}"
+						:aria-label="sendingErrorIconTooltip"
+						tabindex="0"
+						@mouseover="showReloadButton = true"
+						@focus="showReloadButton = true"
+						@mouseleave="showReloadButton = true"
+						@blur="showReloadButton = true">
+						<Button v-if="sendingErrorCanRetry && showReloadButton"
+							class="nc-button nc-button__main--dark"
+							@click="handleRetry">
+							<Reload decorative
+								title=""
+								:size="16" />
+						</Button>
+						<AlertCircle v-else
+							decorative
+							title=""
+							:size="16" />
+					</div>
+					<div v-else-if="isTemporary && !isTemporaryUpload || isDeleting"
+						v-tooltip.auto="loadingIconTooltip"
+						class="icon-loading-small message-status"
+						:aria-label="loadingIconTooltip" />
+					<div v-else-if="showCommonReadIcon"
+						v-tooltip.auto="commonReadIconTooltip"
+						class="message-status"
+						:aria-label="commonReadIconTooltip">
+						<CheckAll decorative
+							title=""
+							:size="16" />
+					</div>
+					<div v-else-if="showSentIcon"
+						v-tooltip.auto="sentIconTooltip"
+						class="message-status"
+						:aria-label="sentIconTooltip">
+						<Check decorative
+							title=""
+							:size="16" />
+					</div>
 				</div>
 			</div>
-			<div v-else-if="showJoinCallButton" class="message__main__text call-started">
-				<RichText :text="message" :arguments="richParameters" :autolink="true" />
-				<CallButton />
-			</div>
-			<div v-else class="message__main__text" :class="{'system-message': isSystemMessage}">
-				<Quote v-if="parent" v-bind="quote" />
-				<RichText :text="message" :arguments="richParameters" :autolink="true" />
-			</div>
-			<div class="message__main__right">
-				<div v-if="isTemporary" class="icon-loading-small" />
-				<h6 v-if="hasDate">
-					{{ messageTime }}
-				</h6>
-				<Actions
-					v-show="showActions && hasActions"
-					class="message__main__right__actions">
-					<ActionButton
-						v-if="isReplyable"
-						icon="icon-reply"
-						:close-after-click="true"
-						@click.stop="handleReply">
-						{{ t('spreed', 'Reply') }}
-					</ActionButton>
-				</Actions>
+
+			<!-- reactions buttons and popover with details -->
+			<div v-if="hasReactions"
+				class="message-body__reactions"
+				@mouseover="handleReactionsMouseOver">
+				<Popover v-for="reaction in Object.keys(simpleReactions)"
+					:key="reaction"
+					:delay="200"
+					trigger="hover">
+					<button v-if="simpleReactions[reaction]!== 0"
+						slot="trigger"
+						class="reaction-button"
+						:class="{'reaction-button__has-reacted': userHasReacted(reaction)}"
+						@click="handleReactionClick(reaction)">
+						<span class="reaction-button__emoji">{{ reaction }}</span>
+						<span> {{ simpleReactions[reaction] }}</span>
+					</button>
+					<div v-if="detailedReactions" class="reaction-details">
+						<span>{{ getReactionSummary(reaction) }}</span>
+					</div>
+				</Popover>
+
+				<!-- More reactions picker -->
+				<EmojiPicker v-if="canReact"
+					:per-line="5"
+					:container="`#message_${id}`"
+					@select="handleReactionClick">
+					<button class="reaction-button">
+						<EmoticonOutline :size="15" />
+					</button>
+				</EmojiPicker>
 			</div>
 		</div>
-	</div>
+
+		<!-- Message actions -->
+		<MessageButtonsBar v-if="showMessageButtonsBar"
+			ref="messageButtonsBar"
+			:is-action-menu-open.sync="isActionMenuOpen"
+			:is-emoji-picker-open.sync="isEmojiPickerOpen"
+			:is-reactions-menu-open.sync="isReactionsMenuOpen"
+			:message-api-data="messageApiData"
+			:message-object="messageObject"
+			v-bind="$props"
+			:previous-message-id="previousMessageId"
+			:participant="participant"
+			@delete="handleDelete" />
+		<div v-if="isLastReadMessage"
+			v-observe-visibility="lastReadMessageVisibilityChanged">
+			<div class="new-message-marker">
+				<span>{{ t('spreed', 'Unread messages') }}</span>
+			</div>
+		</div>
+	</li>
 </template>
 
 <script>
-import ActionButton from '@nextcloud/vue/dist/Components/ActionButton'
-import Actions from '@nextcloud/vue/dist/Components/Actions'
+import Tooltip from '@nextcloud/vue/dist/Directives/Tooltip'
 import CallButton from '../../../TopBar/CallButton'
+import DeckCard from './MessagePart/DeckCard'
 import DefaultParameter from './MessagePart/DefaultParameter'
 import FilePreview from './MessagePart/FilePreview'
 import Mention from './MessagePart/Mention'
 import RichText from '@juliushaertl/vue-richtext'
+import AlertCircle from 'vue-material-design-icons/AlertCircle'
+import Check from 'vue-material-design-icons/Check'
+import CheckAll from 'vue-material-design-icons/CheckAll'
+import Reload from 'vue-material-design-icons/Reload'
 import Quote from '../../../Quote'
+import isInCall from '../../../../mixins/isInCall'
+import participant from '../../../../mixins/participant'
 import { EventBus } from '../../../../services/EventBus'
 import emojiRegex from 'emoji-regex'
-import { PARTICIPANT } from '../../../../constants'
+import moment from '@nextcloud/moment'
+import Location from './MessagePart/Location'
+import Contact from './MessagePart/Contact.vue'
+import MessageButtonsBar from './MessageButtonsBar/MessageButtonsBar.vue'
+import EmojiPicker from '@nextcloud/vue/dist/Components/EmojiPicker'
+import EmoticonOutline from 'vue-material-design-icons/EmoticonOutline.vue'
+import Popover from '@nextcloud/vue/dist/Components/Popover'
+import { showError, showSuccess, showWarning, TOAST_DEFAULT_TIMEOUT } from '@nextcloud/dialogs'
+import { ATTENDEE, CONVERSATION, PARTICIPANT } from '../../../../constants'
 
 export default {
 	name: 'Message',
 
+	directives: {
+		tooltip: Tooltip,
+	},
+
 	components: {
-		Actions,
-		ActionButton,
 		CallButton,
 		Quote,
 		RichText,
+		AlertCircle,
+		Check,
+		CheckAll,
+		Reload,
+		MessageButtonsBar,
+		EmojiPicker,
+		EmoticonOutline,
+		Popover,
 	},
+
+	mixins: [
+		participant,
+		isInCall,
+	],
+
 	inheritAttrs: false,
 
 	props: {
@@ -184,9 +310,16 @@ export default {
 			required: true,
 		},
 		/**
-		 * The conversation token.
+		 * The type of system message
 		 */
 		systemMessage: {
+			type: String,
+			required: true,
+		},
+		/**
+		 * The type of the message.
+		 */
+		messageType: {
 			type: String,
 			required: true,
 		},
@@ -197,28 +330,86 @@ export default {
 			type: Number,
 			default: 0,
 		},
+		sendingFailure: {
+			type: String,
+			default: '',
+		},
+
+		previousMessageId: {
+			type: [String, Number],
+			default: 0,
+		},
+
+		nextMessageId: {
+			type: [String, Number],
+			default: 0,
+		},
+
+		lastReadMessageId: {
+			type: [String, Number],
+			default: 0,
+		},
+
+		reactions: {
+			type: [Array, Object],
+			default: () => { return {} },
+		},
+
+		reactionsSelf: {
+			type: Array,
+			default: () => { return [] },
+		},
 	},
 
 	data() {
 		return {
-			showActions: false,
+			isHovered: false,
 			// Is tall enough for both actions and date upon hovering
 			isTallEnough: false,
+			showReloadButton: false,
+			isDeleting: false,
+			// whether the message was seen, only used if this was marked as last read message
+			seen: false,
+			isActionMenuOpen: false,
+			isEmojiPickerOpen: false,
+			isReactionsMenuOpen: false,
+			detailedReactionsLoading: false,
 		}
 	},
 
 	computed: {
-		hasActions() {
-			return this.isReplyable
+		isLastReadMessage() {
+			if (!this.nextMessageId) {
+				// never display indicator on the very last message
+				return false
+			}
+			// note: not reading lastReadMessage from the conversation as we want to define it externally
+			// to have closer control on marker's visibility behavior
+			return this.id === this.lastReadMessageId
+				&& (!this.conversation.lastMessage
+				|| this.id !== this.conversation.lastMessage.id)
+		},
+
+		messageObject() {
+			return this.$store.getters.message(this.token, this.id)
 		},
 
 		isSystemMessage() {
 			return this.systemMessage !== ''
 		},
 
-		messageTime() {
-			return OC.Util.formatDate(this.timestamp * 1000, 'LT')
+		isDeletedMessage() {
+			return this.messageType === 'comment_deleted'
 		},
+
+		messageTime() {
+			return moment(this.timestamp * 1000).format('LT')
+		},
+
+		messageDate() {
+			return moment(this.timestamp * 1000).format('LL')
+		},
+
 		quote() {
 			return this.parent && this.$store.getters.message(this.token, this.parent)
 		},
@@ -227,15 +418,18 @@ export default {
 			return this.$store.getters.conversation(this.token)
 		},
 
-		participant() {
-			const participantIndex = this.$store.getters.getParticipantIndex(this.token, this.$store.getters.getParticipantIdentifier())
-			if (participantIndex !== -1) {
-				return this.$store.getters.getParticipant(this.token, participantIndex)
-			}
+		showCommonReadIcon() {
+			return this.conversation.lastCommonReadMessage >= this.id
+				&& this.showSentIcon && !this.isDeletedMessage
+		},
 
-			return {
-				inCall: PARTICIPANT.CALL_FLAG.DISCONNECTED,
-			}
+		showSentIcon() {
+			return !this.isSystemMessage
+				&& !this.isTemporary
+				&& !this.isDeleting
+				&& this.actorType === this.participant.actorType
+				&& this.actorId === this.participant.actorId
+				&& !this.isDeletedMessage
 		},
 
 		messagesList() {
@@ -243,7 +437,9 @@ export default {
 		},
 
 		isLastCallStartedMessage() {
+			// FIXME: remove dependency to messages list and convert to property
 			const messages = this.messagesList
+			// FIXME: don't reverse the whole array as it would create a copy, just do an actual reverse search
 			const lastCallStartedMessage = messages.reverse().find((message) => message.systemMessage === 'call_started')
 			return lastCallStartedMessage ? (this.id === lastCallStartedMessage.id) : false
 		},
@@ -251,8 +447,8 @@ export default {
 		showJoinCallButton() {
 			return this.systemMessage === 'call_started'
 				&& this.conversation.hasCall
-				&& this.participant.inCall === PARTICIPANT.CALL_FLAG.DISCONNECTED
 				&& this.isLastCallStartedMessage
+				&& !this.isInCall
 		},
 
 		isSingleEmoji() {
@@ -278,14 +474,32 @@ export default {
 			const richParameters = {}
 			Object.keys(this.messageParameters).forEach(function(p) {
 				const type = this.messageParameters[p].type
+				const mimetype = this.messageParameters[p].mimetype
 				if (type === 'user' || type === 'call' || type === 'guest') {
 					richParameters[p] = {
 						component: Mention,
 						props: this.messageParameters[p],
 					}
-				} else if (type === 'file') {
+				} else if (type === 'file' && mimetype !== 'text/vcard') {
+					const parameters = this.messageParameters[p]
+					parameters['is-voice-message'] = this.messageType === 'voice-message'
 					richParameters[p] = {
 						component: FilePreview,
+						props: parameters,
+					}
+				} else if (type === 'deck-card') {
+					richParameters[p] = {
+						component: DeckCard,
+						props: this.messageParameters[p],
+					}
+				} else if (type === 'geo-location') {
+					richParameters[p] = {
+						component: Location,
+						props: this.messageParameters[p],
+					}
+				} else if (mimetype === 'text/vcard') {
+					richParameters[p] = {
+						component: Contact,
 						props: this.messageParameters[p],
 					}
 				} else {
@@ -300,40 +514,263 @@ export default {
 
 		// Determines whether the date has to be displayed or not
 		hasDate() {
-			return this.isSystemMessage || (!this.isTemporary && !this.showActions) || this.isTallEnough
+			if (this.isTemporary || this.isDeleting || this.sendingFailure) {
+				// Never on temporary or failed messages
+				return false
+			}
+
+			return this.isSystemMessage || !this.isHovered || this.isTallEnough
+		},
+
+		showMessageButtonsBar() {
+			return !this.isSystemMessage && !this.isTemporary && (this.isHovered || this.isActionMenuOpen || this.isEmojiPickerOpen || this.isReactionsMenuOpen)
+		},
+
+		isTemporaryUpload() {
+			return this.isTemporary && this.messageParameters.file
+		},
+
+		loadingIconTooltip() {
+			return t('spreed', 'Sending message')
+		},
+
+		sentIconTooltip() {
+			return t('spreed', 'Message sent')
+		},
+
+		commonReadIconTooltip() {
+			return t('spreed', 'Message read by everyone who shares their reading status')
+		},
+
+		sendingErrorCanRetry() {
+			return this.sendingFailure === 'timeout' || this.sendingFailure === 'other'
+		},
+
+		sendingErrorIconTooltip() {
+			if (this.sendingErrorCanRetry) {
+				return t('spreed', 'Failed to send the message. Click to try again')
+			}
+			if (this.sendingFailure === 'quota') {
+				return t('spreed', 'Not enough free space to upload file')
+			}
+			if (this.sendingFailure === 'failed-share') {
+				return t('spreed', 'You are not allowed to share files')
+			}
+			return t('spreed', 'You cannot send messages to this conversation at the moment')
+		},
+
+		messageActions() {
+			return this.$store.getters.messageActions
+		},
+
+		messageApiData() {
+			return {
+				message: this.messageObject,
+				metadata: this.conversation,
+				apiVersion: 'v3',
+			}
+		},
+
+		hasReactions() {
+			return this.$store.getters.hasReactions(this.token, this.id)
+		},
+
+		canReact() {
+			return this.conversation.readOnly !== CONVERSATION.STATE.READ_ONLY && (this.conversation.permissions & PARTICIPANT.PERMISSIONS.CHAT) !== 0
+		},
+
+		simpleReactions() {
+			return this.messageObject.reactions
+		},
+
+		detailedReactions() {
+			return this.$store.getters.reactions(this.token, this.id)
+		},
+
+		detailedReactionsLoaded() {
+			return this.$store.getters.reactionsLoaded(this.token, this.id)
 		},
 	},
 
 	watch: {
 		showJoinCallButton() {
-			EventBus.$emit('scrollChatToBottom')
+			EventBus.$emit('scroll-chat-to-bottom')
 		},
 	},
 
 	mounted() {
-		if (this.$refs.messageMain.clientHeight > 44) {
+		if (this.$refs.messageMain.clientHeight > 56) {
 			this.isTallEnough = true
 		}
+
+		// define a function so it can be triggered directly on the DOM element
+		// which can be found with document.getElementById()
+		this.$refs.message.highlightAnimation = () => {
+			this.highlightAnimation()
+		}
+
+		this.$refs.message.addEventListener('animationend', this.highlightAnimationStop)
+	},
+
+	beforeDestroy() {
+		this.$refs.message.removeEventListener('animationend', this.highlightAnimationStop)
 	},
 
 	methods: {
-		handleReply() {
-			this.$store.dispatch('addMessageToBeReplied', {
-				id: this.id,
-				actorId: this.actorId,
-				actorType: this.actorType,
-				actorDisplayName: this.actorDisplayName,
-				timestamp: this.timestamp,
-				systemMessage: this.systemMessage,
-				messageType: this.messageType,
-				message: this.message,
-				messageParameters: this.messageParameters,
-				token: this.token,
-			})
-			EventBus.$emit('focusChatInput')
+		userHasReacted(reaction) {
+			return this.reactionsSelf && this.reactionsSelf.indexOf(reaction) !== -1
 		},
-		handleDelete() {
-			this.$store.dispatch('deleteMessage', this.message)
+
+		lastReadMessageVisibilityChanged(isVisible) {
+			if (isVisible) {
+				this.seen = true
+			}
+		},
+
+		highlightAnimation() {
+			// trigger CSS highlight animation by setting a class
+			this.$refs.message.classList.add('highlight-animation')
+		},
+		highlightAnimationStop() {
+			// when the animation ended, remove the class so we can trigger it
+			// again another time
+			this.$refs.message.classList.remove('highlight-animation')
+		},
+
+		handleRetry() {
+			if (this.sendingErrorCanRetry) {
+				EventBus.$emit('retry-message', this.id)
+				EventBus.$emit('focus-chat-input')
+			}
+		},
+
+		handleMouseover() {
+			if (!this.isHovered) {
+				this.isHovered = true
+			}
+		},
+
+		handleReactionsMouseOver() {
+			if (this.hasReactions && !this.detailedReactionsLoaded) {
+				this.getReactions()
+			}
+		},
+
+		handleMouseleave() {
+			if (this.isHovered) {
+				this.isHovered = false
+			}
+		},
+
+		async getReactions() {
+			if (this.detailedReactionsLoading) {
+				// A parallel request is already doing this
+				return
+			}
+
+			try {
+				/**
+				 * Get reaction details when the message is hovered for the first
+				 * time. After that we rely on system messages to update the
+				 * reactions.
+				 */
+				this.detailedReactionsLoading = true
+				await this.$store.dispatch('getReactions', {
+					token: this.token,
+					messageId: this.id,
+				})
+				this.detailedReactionsLoading = false
+			} catch {
+				this.detailedReactionsLoading = false
+			}
+		},
+
+		async handleReactionClick(clickedEmoji) {
+			if (!this.canReact) {
+				showError(t('spreed', 'No permission to post reactions in this conversation'))
+				return
+			}
+
+			// Check if current user has already added this reaction to the message
+			if (!this.userHasReacted(clickedEmoji)) {
+				this.$store.dispatch('addReactionToMessage', {
+					token: this.token,
+					messageId: this.id,
+					selectedEmoji: clickedEmoji,
+					actorId: this.actorId,
+				})
+			} else {
+				this.$store.dispatch('removeReactionFromMessage', {
+					token: this.token,
+					messageId: this.id,
+					selectedEmoji: clickedEmoji,
+					actorId: this.actorId,
+				})
+			}
+		},
+
+		async handleDelete() {
+			this.isDeleting = true
+			try {
+				const statusCode = await this.$store.dispatch('deleteMessage', {
+					message: {
+						token: this.token,
+						id: this.id,
+					},
+					placeholder: t('spreed', 'Deleting message'),
+				})
+
+				if (statusCode === 202) {
+					showWarning(t('spreed', 'Message deleted successfully, but Matterbridge is configured and the message might already be distributed to other services'), {
+						timeout: TOAST_DEFAULT_TIMEOUT * 2,
+					})
+				} else if (statusCode === 200) {
+					showSuccess(t('spreed', 'Message deleted successfully'))
+				}
+			} catch (e) {
+				if (e?.response?.status === 400) {
+					showError(t('spreed', 'Message could not be deleted because it is too old'))
+				} else if (e?.response?.status === 405) {
+					showError(t('spreed', 'Only normal chat messages can be deleted'))
+				} else {
+					showError(t('spreed', 'An error occurred while deleting the message'))
+					console.error(e)
+				}
+				this.isDeleting = false
+				return
+			}
+
+			this.isDeleting = false
+		},
+
+		getReactionSummary(reaction) {
+			const list = this.detailedReactions[reaction]
+			const summary = []
+
+			for (const item in list) {
+				if (list[item].actorType === this.$store.getters.getActorType()
+					&& list[item].actorId === this.$store.getters.getActorId()) {
+					summary.unshift(t('spreed', 'You'))
+				} else {
+					summary.push(this.getDisplayNameForReaction(list[item]))
+				}
+			}
+
+			return summary.join(', ')
+		},
+
+		getDisplayNameForReaction(reaction) {
+			const displayName = reaction.actorDisplayName.trim()
+
+			if (reaction.actorType === ATTENDEE.ACTOR_TYPE.GUESTS) {
+				return this.$store.getters.getGuestNameWithGuestSuffix(this.token, reaction.actorId)
+			}
+
+			if (displayName === '') {
+				return t('spreed', 'Deleted user')
+			}
+
+			return displayName
 		},
 	},
 }
@@ -341,11 +778,22 @@ export default {
 
 <style lang="scss" scoped>
 @import '../../../../assets/variables';
+@import '../../../../assets/buttons';
+
+.message:hover .normal-message-body {
+	border-radius: 8px;
+	background-color: var(--color-background-hover);
+}
 
 .message {
+	position: relative;
+}
+
+.message-body {
 	padding: 4px;
 	font-size: $chat-font-size;
 	line-height: $chat-line-height;
+	position: relative;
 	&__author {
 		color: var(--color-text-maxcontrast);
 	}
@@ -354,7 +802,7 @@ export default {
 		justify-content: space-between;
 		min-width: 100%;
 		&__text {
-			flex: 0 1 auto;
+			flex: 0 1 600px;
 			color: var(--color-text-light);
 			.single-emoji {
 				font-size: 250%;
@@ -370,6 +818,16 @@ export default {
 
 			&.system-message {
 				color: var(--color-text-maxcontrast);
+				text-align: center;
+				padding: 0 20px;
+				width: 100%;
+			}
+
+			&.deleted-message {
+				color: var(--color-text-lighter);
+				display: flex;
+				border-radius: var(--border-radius-large);
+				align-items: center;
 			}
 
 			::v-deep .rich-text--wrapper {
@@ -384,34 +842,101 @@ export default {
 		}
 		&__right {
 			justify-self: flex-start;
-			justify-content:  space-between;
+			justify-content: flex-end;
 			position: relative;
+			user-select: none;
 			display: flex;
 			color: var(--color-text-maxcontrast);
 			font-size: $chat-font-size;
-			flex: 1 0 80px;
+			flex: 1 0 auto;
 			padding: 0 8px 0 8px;
-			&__actions.action-item {
-				position: absolute;
-				bottom: -11px;
-				right: -3px;
-			}
-			& h6 {
-				margin-left: auto;
-			}
 		}
+	}
+	&__reactions {
+		display: flex;
+		flex-wrap: wrap;
+		margin: 4px 0 4px -2px;
+	}
+}
+
+.date {
+	margin-right: $clickable-area;
+	&--self {
+		margin-right: 0;
 	}
 }
 
 // Increase the padding for regular messages to improve readability and
 // allow some space for the reply button
-.message:not(.system) {
-	padding: 12px 4px 12px 8px;
-	margin: -6px 0;
+.message-body:not(.system) {
+	padding: 4px 4px 4px 8px;
 }
 
-.hover {
-	background-color: var(--color-background-hover);
+.highlight-animation {
+	animation: highlight-animation 5s 1;
 	border-radius: 8px;
+}
+
+@keyframes highlight-animation {
+	0% { background-color: var(--color-background-hover); }
+	50% { background-color: var(--color-background-hover); }
+	100% { background-color: rgba(var(--color-background-hover), 0); }
+}
+
+.new-message-marker {
+	position: relative;
+	margin: 20px 15px 20px -45px;
+	border-top: 1px solid var(--color-border);
+
+	span {
+		position: absolute;
+		top: 0;
+		left: 50%;
+		transform: translateX(-50%) translateY(-50%);
+		padding: 0 7px 0 7px;
+		text-align: center;
+		white-space: nowrap;
+
+		border-radius: var(--border-radius);
+		background-color: var(--color-main-background);
+	}
+}
+
+.message-status {
+	margin: -8px 0;
+	width: $clickable-area;
+	height: $clickable-area;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+
+	&.retry-option {
+		cursor: pointer;
+	}
+}
+
+.reaction-button {
+	// Clear server rules
+	min-height: 0 !important;
+	padding: 0 8px !important;
+	font-weight: normal !important;
+
+	margin: 2px;
+	height: 26px;
+	background-color: var(--color-main-background);
+
+	&__emoji {
+		margin: 0 4px 0 0;
+	}
+
+	&__has-reacted,
+	&:hover {
+		border-color: var(--color-primary-element);
+		background-color: var(--color-primary-element-lighter);
+	}
+}
+
+.reaction-details {
+	padding: 8px;
 }
 </style>

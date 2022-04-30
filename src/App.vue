@@ -20,8 +20,7 @@
 -->
 
 <template>
-	<Content
-		v-shortkey="['ctrl', 'f']"
+	<Content v-shortkey.once="['ctrl', 'f']"
 		:class="{ 'icon-loading': loading, 'in-call': isInCall }"
 		app-name="talk"
 		@shortkey.native="handleAppSearch">
@@ -29,9 +28,12 @@
 		<AppContent>
 			<router-view />
 		</AppContent>
-		<RightSidebar
-			:show-chat-in-sidebar="isInCall" />
-		<PreventUnload :when="isInCall" />
+		<RightSidebar :show-chat-in-sidebar="isInCall" />
+		<PreventUnload :when="warnLeaving || isSendingMessages" />
+		<DeviceChecker :initialize-on-mounted="false" />
+		<UploadEditor />
+		<SettingsDialog />
+		<ConversationSettingsDialog />
 	</Content>
 </template>
 
@@ -46,19 +48,25 @@ import RightSidebar from './components/RightSidebar/RightSidebar'
 import { EventBus } from './services/EventBus'
 import BrowserStorage from './services/BrowserStorage'
 import { getCurrentUser } from '@nextcloud/auth'
-import { fetchConversation } from './services/conversationsService'
 import {
-	joinConversation,
 	leaveConversationSync,
 } from './services/participantsService'
-import { PARTICIPANT } from './constants'
 import {
 	signalingKill,
 } from './utils/webrtc/index'
 import { emit } from '@nextcloud/event-bus'
 import browserCheck from './mixins/browserCheck'
+import sessionIssueHandler from './mixins/sessionIssueHandler'
+import isInCall from './mixins/isInCall'
+import participant from './mixins/participant'
 import talkHashCheck from './mixins/talkHashCheck'
 import { generateUrl } from '@nextcloud/router'
+import UploadEditor from './components/UploadEditor'
+import SettingsDialog from './components/SettingsDialog/SettingsDialog'
+import ConversationSettingsDialog from './components/ConversationSettings/ConversationSettingsDialog'
+import '@nextcloud/dialogs/styles/toast.scss'
+import { CONVERSATION } from './constants'
+import DeviceChecker from './components/DeviceChecker/DeviceChecker.vue'
 
 export default {
 	name: 'App',
@@ -68,14 +76,21 @@ export default {
 		LeftSidebar,
 		PreventUnload,
 		RightSidebar,
+		UploadEditor,
+		SettingsDialog,
+		ConversationSettingsDialog,
+		DeviceChecker,
 	},
 
 	mixins: [
 		browserCheck,
 		talkHashCheck,
+		sessionIssueHandler,
+		isInCall,
+		participant,
 	],
 
-	data: function() {
+	data() {
 		return {
 			savedLastMessageMap: {},
 			defaultPageTitle: false,
@@ -96,30 +111,18 @@ export default {
 			return this.$store.getters.getUserId()
 		},
 
-		participant() {
-			if (typeof this.token === 'undefined') {
-				return {
-					inCall: PARTICIPANT.CALL_FLAG.DISCONNECTED,
-				}
-			}
-
-			const participantIndex = this.$store.getters.getParticipantIndex(this.token, this.$store.getters.getParticipantIdentifier())
-			if (participantIndex !== -1) {
-				return this.$store.getters.getParticipant(this.token, participantIndex)
-			}
-
-			return {
-				inCall: PARTICIPANT.CALL_FLAG.DISCONNECTED,
-			}
+		isSendingMessages() {
+			return this.$store.getters.isSendingMessages
 		},
 
-		isInCall() {
-			return this.participant.inCall !== PARTICIPANT.CALL_FLAG.DISCONNECTED
+		warnLeaving() {
+			return !this.isLeavingAfterSessionIssue && this.isInCall
 		},
 
 		/**
 		 * Keeps a list for all last message ids
-		 * @returns {object} Map with token => lastMessageId
+		 *
+		 * @return {object} Map with token => lastMessageId
 		 */
 		lastMessageMap() {
 			const conversationList = this.$store.getters.conversationsList
@@ -150,7 +153,7 @@ export default {
 		},
 
 		/**
-		 * @returns {boolean} Returns true, if
+		 * @return {boolean} Returns true, if
 		 * - a conversation is newly added to lastMessageMap
 		 * - a conversation has a different last message id then previously
 		 */
@@ -169,10 +172,29 @@ export default {
 
 		/**
 		 * The current conversation token
-		 * @returns {string} The token.
+		 *
+		 * @return {string} The token.
 		 */
 		token() {
 			return this.$store.getters.getToken()
+		},
+
+		/**
+		 * The current conversation
+		 *
+		 * @return {object} The conversation object.
+		 */
+		currentConversation() {
+			return this.$store.getters.conversation(this.token)
+		},
+
+		/**
+		 * Computes whether the current conversation is one to one
+		 *
+		 * @return {boolean} The result
+		 */
+		isOneToOne() {
+			return this.currentConversation?.type === CONVERSATION.TYPE.ONE_TO_ONE
 		},
 	},
 
@@ -184,30 +206,37 @@ export default {
 
 			this.setPageTitle(this.getConversationName(this.token), this.atLeastOneLastMessageIdChanged)
 		},
+
+		token() {
+			// Collapse the sidebar if it's a 1to1 conversation
+			if (this.isOneToOne || BrowserStorage.getItem('sidebarOpen') === 'false') {
+				this.$store.dispatch('hideSidebar')
+			} else if (BrowserStorage.getItem('sidebarOpen') === 'true') {
+				this.$store.dispatch('showSidebar')
+			}
+		},
 	},
 
 	beforeDestroy() {
 		if (!getCurrentUser()) {
-			EventBus.$off('shouldRefreshConversations', this.debounceRefreshCurrentConversation)
+			EventBus.$off('should-refresh-conversations', this.debounceRefreshCurrentConversation)
 		}
-		EventBus.$off('Signaling::participantListChanged', this.debounceRefreshCurrentConversation)
 		document.removeEventListener('visibilitychange', this.changeWindowVisibility)
 	},
 
 	beforeMount() {
 		if (!getCurrentUser()) {
-			EventBus.$once('joinedConversation', () => {
+			EventBus.$once('joined-conversation', () => {
 				this.fixmeDelayedSetupOfGuestUsers()
 			})
-			EventBus.$on('shouldRefreshConversations', this.debounceRefreshCurrentConversation)
+			EventBus.$on('should-refresh-conversations', this.debounceRefreshCurrentConversation)
 		}
-		EventBus.$on('Signaling::participantListChanged', this.debounceRefreshCurrentConversation)
 
 		if (this.$route.name === 'conversation') {
 			// Update current token in the token store
 			this.$store.dispatch('updateToken', this.$route.params.token)
 			// Automatically join the conversation as well
-			joinConversation(this.$route.params.token)
+			this.$store.dispatch('joinConversation', { token: this.$route.params.token })
 		}
 
 		window.addEventListener('resize', this.onResize)
@@ -221,19 +250,22 @@ export default {
 				// We have to do this synchronously, because in unload and beforeunload
 				// Promises, async and await are prohibited.
 				signalingKill()
-				leaveConversationSync(this.token)
+				if (!this.isLeavingAfterSessionIssue) {
+					leaveConversationSync(this.token)
+				}
 			}
 		})
 
-		EventBus.$on('conversationsReceived', (params) => {
+		EventBus.$on('conversations-received', (params) => {
 			if (this.$route.name === 'conversation'
 				&& !this.$store.getters.conversation(this.token)) {
 				if (!params.singleConversation) {
 					console.info('Conversations received, but the current conversation is not in the list, trying to get potential public conversation manually')
 					this.refreshCurrentConversation()
 				} else {
-					console.info('Conversation received, but the current conversation is not in the list. Redirecting to /apps/spreed')
-					this.$router.push('/apps/spreed/not-found')
+					console.info('Conversation received, but the current conversation is not in the list. Redirecting to not found page')
+					this.$router.push({ name: 'notfound', params: { skipLeaveWarning: true } })
+					this.$store.dispatch('updateToken', '')
 				}
 			}
 		})
@@ -243,7 +275,7 @@ export default {
 		 * component each time a new batch of conversations is received and processed in
 		 * the store.
 		 */
-		EventBus.$once('conversationsReceived', () => {
+		EventBus.$once('conversations-received', () => {
 			if (this.$route.name === 'conversation') {
 				// Adjust the page title once the conversation list is loaded
 				this.setPageTitle(this.getConversationName(this.token), false)
@@ -274,20 +306,24 @@ export default {
 				// Update current token in the token store
 				this.$store.dispatch('updateToken', to.params.token)
 			}
+
+			if (to.name === 'notfound') {
+				this.setPageTitle('')
+			}
 			/**
 			 * Fires a global event that tells the whole app that the route has changed. The event
 			 * carries the from and to objects as payload
 			 */
-			EventBus.$emit('routeChange', { from, to })
+			EventBus.$emit('route-change', { from, to })
 
 			next()
 		}
 
 		/**
 		 * Global before guard, this is called whenever a navigation is triggered.
-		*/
+		 */
 		Router.beforeEach((to, from, next) => {
-			if (this.isInCall) {
+			if (this.warnLeaving && !to.params?.skipLeaveWarning) {
 				OC.dialogs.confirmDestructive(
 					t('spreed', 'Navigating away from the page will leave the call in {conversation}', {
 						conversation: this.getConversationName(this.token),
@@ -310,6 +346,7 @@ export default {
 			} else {
 				beforeRouteChangeListener(to, from, next)
 			}
+
 		})
 
 		if (getCurrentUser()) {
@@ -320,7 +357,7 @@ export default {
 		}
 	},
 
-	mounted() {
+	async mounted() {
 		// see browserCheck mixin
 		this.checkBrowser()
 		// Check sidebar status in previous sessions
@@ -356,7 +393,11 @@ export default {
 			this.$store.dispatch('setWindowVisibility', !document.hidden)
 			if (this.windowIsVisible) {
 				// Remove the potential "*" marker for unread chat messages
-				this.setPageTitle(this.getConversationName(this.token), false)
+				let title = this.getConversationName(this.token)
+				if (window.document.title.indexOf(t('spreed', 'Duplicate session')) === 0) {
+					title = t('spreed', 'Duplicate session')
+				}
+				this.setPageTitle(title, false)
 			} else {
 				// Copy the last message map to the saved version,
 				// this will be our reference to check if any chat got a new
@@ -367,6 +408,7 @@ export default {
 
 		/**
 		 * Set the page title to the conversation name
+		 *
 		 * @param {string} title Prefix for the page title e.g. conversation name
 		 * @param {boolean} showAsterix Prefix for the page title e.g. conversation name
 		 */
@@ -375,6 +417,10 @@ export default {
 				// On the first load we store the current page title "Talk - Nextcloud",
 				// so we can append it every time again
 				this.defaultPageTitle = window.document.title
+				// Coming from a "Duplicate session - Talk - …" page?
+				if (this.defaultPageTitle.indexOf(' - ' + t('spreed', 'Talk') + ' - ') !== -1) {
+					this.defaultPageTitle = this.defaultPageTitle.substring(this.defaultPageTitle.indexOf(' - ' + t('spreed', 'Talk') + ' - ') + 3)
+				}
 				// When a conversation is opened directly, the "Talk - " part is
 				// missing from the title
 				if (this.defaultPageTitle.indexOf(t('spreed', 'Talk') + ' - ') !== 0) {
@@ -382,11 +428,14 @@ export default {
 				}
 			}
 
+			let newTitle = this.defaultPageTitle
 			if (title !== '') {
-				window.document.title = (showAsterix ? '* ' : '') + `${title} - ${this.defaultPageTitle}`
-			} else {
-				window.document.title = (showAsterix ? '* ' : '') + this.defaultPageTitle
+				newTitle = `${title} - ${newTitle}`
 			}
+			if (showAsterix && !newTitle.startsWith('* ')) {
+				newTitle = '* ' + newTitle
+			}
+			window.document.title = newTitle
 		},
 
 		onResize() {
@@ -395,8 +444,9 @@ export default {
 
 		/**
 		 * Get a conversation's name.
+		 *
 		 * @param {string} token The conversation's token
-		 * @returns {string} The conversation's name
+		 * @return {string} The conversation's name
 		 */
 		getConversationName(token) {
 			if (!this.$store.getters.conversation(token)) {
@@ -411,25 +461,21 @@ export default {
 
 			try {
 				/**
-				 * Fetches the conversations from the server and then adds them one by one
-				 * to the store.
+				 * Fetches a single conversation
 				 */
-				const response = await fetchConversation(token)
-
-				// this.$store.dispatch('purgeConversationsStore')
-				this.$store.dispatch('addConversation', response.data.ocs.data)
-				this.$store.dispatch('markConversationRead', token)
+				await this.$store.dispatch('fetchConversation', { token })
 
 				/**
 				 * Emits a global event that is used in App.vue to update the page title once the
 				 * ( if the current route is a conversation and once the conversations are received)
 				 */
-				EventBus.$emit('conversationsReceived', {
+				EventBus.$emit('conversations-received', {
 					singleConversation: true,
 				})
 			} catch (exception) {
 				console.info('Conversation received, but the current conversation is not in the list. Redirecting to /apps/spreed')
-				this.$router.push('/apps/spreed/not-found')
+				this.$router.push({ name: 'notfound', params: { skipLeaveWarning: true } })
+				this.$store.dispatch('updateToken', '')
 				this.$store.dispatch('hideSidebar')
 			} finally {
 				this.isRefreshingCurrentConversation = false
@@ -446,23 +492,21 @@ export default {
 }
 </script>
 
+<style lang="scss">
+/** override toastify position due to top bar */
+body.has-topbar .toastify-top {
+	margin-top: 105px;
+}
+</style>
+
 <style lang="scss" scoped>
 .content {
 	height: 100%;
 
-	::v-deep .app-content:hover {
-		.action-item--single {
-			background-color: rgba(0, 0, 0, .1) !important;
-
-			&:hover {
-				background-color: rgba(0, 0, 0, .2) !important;
-			}
-		}
-	}
-
+	//FIXME: remove this v-deep once nextcloud vue v4 is adopted
 	::v-deep .app-navigation-toggle {
-		top: 10px;
-		right: -10px;
+		top: 8px;
+		right: -8px;
 		border-radius: var(--border-radius-pill);
 	}
 

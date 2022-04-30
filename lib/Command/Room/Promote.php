@@ -25,31 +25,17 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Command\Room;
 
-use Exception;
+use InvalidArgumentException;
 use OC\Core\Command\Base;
 use OCA\Talk\Exceptions\RoomNotFoundException;
-use OCA\Talk\Manager;
 use OCA\Talk\Room;
-use OCP\IUserManager;
+use Stecman\Component\Symfony\Console\BashCompletion\CompletionContext;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class Promote extends Base {
 	use TRoomCommand;
-
-	/** @var IUserManager */
-	public $userManager;
-
-	/** @var Manager */
-	public $manager;
-
-	public function __construct(IUserManager $userManager, Manager $manager) {
-		parent::__construct();
-
-		$this->userManager = $userManager;
-		$this->manager = $manager;
-	}
 
 	protected function configure(): void {
 		$this
@@ -66,7 +52,7 @@ class Promote extends Base {
 			);
 	}
 
-	protected function execute(InputInterface $input, OutputInterface $output): ?int {
+	protected function execute(InputInterface $input, OutputInterface $output): int {
 		$token = $input->getArgument('token');
 		$users = $input->getArgument('participant');
 
@@ -77,19 +63,31 @@ class Promote extends Base {
 			return 1;
 		}
 
-		if (!in_array($room->getType(), [Room::GROUP_CALL, Room::PUBLIC_CALL], true)) {
+		if (!in_array($room->getType(), [Room::TYPE_GROUP, Room::TYPE_PUBLIC], true)) {
 			$output->writeln('<error>Room is no group call.</error>');
 			return 1;
 		}
 
 		try {
 			$this->addRoomModerators($room, $users);
-		} catch (Exception $e) {
+		} catch (InvalidArgumentException $e) {
 			$output->writeln(sprintf('<error>%s</error>', $e->getMessage()));
 			return 1;
 		}
 
-		$output->writeln('<info>Users successfully added to room.</info>');
+		$output->writeln('<info>Participants successfully promoted to moderators.</info>');
 		return 0;
+	}
+
+	public function completeArgumentValues($argumentName, CompletionContext $context) {
+		switch ($argumentName) {
+			case 'token':
+				return $this->completeTokenValues($context);
+
+			case 'participant':
+				return $this->completeParticipantValues($context);
+		}
+
+		return parent::completeArgumentValues($argumentName, $context);
 	}
 }

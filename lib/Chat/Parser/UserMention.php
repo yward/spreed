@@ -26,6 +26,7 @@ namespace OCA\Talk\Chat\Parser;
 
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\GuestManager;
+use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\Message;
 use OCA\Talk\Room;
 use OCP\Comments\ICommentsManager;
@@ -38,14 +39,15 @@ use OCP\IUserManager;
  */
 class UserMention {
 
-	/** @var ICommentsManager */
-	private $commentsManager;
-	/** @var IUserManager */
-	private $userManager;
-	/** @var GuestManager */
-	private $guestManager;
-	/** @var IL10N */
-	private $l;
+	/**
+	 * Do NOT inject OCA\Talk\Chat\CommentsManager here
+	 * otherwise the display name resolvers are lost
+	 * and mentions are not replaced anymore.
+	 */
+	private ICommentsManager $commentsManager;
+	private IUserManager $userManager;
+	private GuestManager $guestManager;
+	private IL10N $l;
 
 	public function __construct(ICommentsManager $commentsManager,
 								IUserManager $userManager,
@@ -78,6 +80,11 @@ class UserMention {
 		$mentionTypeCount = [];
 
 		$mentions = $comment->getMentions();
+		// TODO This can be removed once getMentions() returns sorted results (Nextcloud 21+)
+		usort($mentions, static function (array $m1, array $m2) {
+			return mb_strlen($m2['id']) <=> mb_strlen($m1['id']);
+		});
+
 		foreach ($mentions as $mention) {
 			if ($mention['type'] === 'user' && $mention['id'] === 'all') {
 				$mention['type'] = 'call';
@@ -101,23 +108,27 @@ class UserMention {
 			// index of the mentions of that type.
 			$mentionParameterId = 'mention-' . $mention['type'] . $mentionTypeCount[$mention['type']];
 
-			if (strpos($mention['id'], ' ') !== false || strpos($mention['id'], 'guest/') === 0) {
-				$placeholder = '@"' . $mention['id'] . '"';
-			} else {
-				$placeholder = '@' .  $mention['id'];
+			$message = str_replace('@"' . $mention['id'] . '"', '{' . $mentionParameterId . '}', $message);
+			if (strpos($mention['id'], ' ') === false && strpos($mention['id'], 'guest/') !== 0) {
+				$message = str_replace('@' . $mention['id'], '{' . $mentionParameterId . '}', $message);
 			}
-			$message = str_replace($placeholder, '{' . $mentionParameterId . '}', $message);
 
 			if ($mention['type'] === 'call') {
+				$userId = '';
+				if ($chatMessage->getParticipant()->getAttendee()->getActorType() === Attendee::ACTOR_USERS) {
+					$userId = $chatMessage->getParticipant()->getAttendee()->getActorId();
+				}
+
 				$messageParameters[$mentionParameterId] = [
 					'type' => $mention['type'],
 					'id' => $chatMessage->getRoom()->getToken(),
-					'name' => $chatMessage->getRoom()->getDisplayName($chatMessage->getParticipant()->getUser()),
+					'name' => $chatMessage->getRoom()->getDisplayName($userId),
 					'call-type' => $this->getRoomType($chatMessage->getRoom()),
 				];
 			} elseif ($mention['type'] === 'guest') {
 				try {
-					$displayName = $this->guestManager->getNameBySessionHash(substr($mention['id'], strlen('guest/')));
+					$participant = $chatMessage->getRoom()->getParticipantByActor(Attendee::ACTOR_GUESTS, substr($mention['id'], strlen('guest/')));
+					$displayName = $participant->getAttendee()->getDisplayName() ?: $this->l->t('Guest');
 				} catch (ParticipantNotFoundException $e) {
 					$displayName = $this->l->t('Guest');
 				}
@@ -158,11 +169,11 @@ class UserMention {
 	 */
 	protected function getRoomType(Room $room): string {
 		switch ($room->getType()) {
-			case Room::ONE_TO_ONE_CALL:
+			case Room::TYPE_ONE_TO_ONE:
 				return 'one2one';
-			case Room::GROUP_CALL:
+			case Room::TYPE_GROUP:
 				return 'group';
-			case Room::PUBLIC_CALL:
+			case Room::TYPE_PUBLIC:
 				return 'public';
 			default:
 				throw new \InvalidArgumentException('Unknown room type');

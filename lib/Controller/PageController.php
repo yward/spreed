@@ -25,7 +25,6 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Controller;
 
-use OC\HintException;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Exceptions\RoomNotFoundException;
 use OCA\Talk\Config;
@@ -43,43 +42,34 @@ use OCP\AppFramework\Http\RedirectResponse;
 use OCP\AppFramework\Http\Response;
 use OCP\AppFramework\Http\TemplateResponse;
 use OCP\AppFramework\Http\Template\PublicTemplateResponse;
+use OCP\AppFramework\Services\IInitialState;
+use OCP\EventDispatcher\GenericEvent;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\IRootFolder;
+use OCP\HintException;
 use OCP\ICacheFactory;
 use OCP\IConfig;
-use OCP\IInitialStateService;
-use OCP\ILogger;
 use OCP\IRequest;
 use OCP\IURLGenerator;
 use OCP\IUser;
 use OCP\IUserSession;
 use OCP\Notification\IManager as INotificationManager;
+use Psr\Log\LoggerInterface;
 
 class PageController extends Controller {
 	use TInitialState;
 
-	/** @var string|null */
-	private $userId;
-	/** @var IEventDispatcher */
-	private $eventDispatcher;
-	/** @var RoomController */
-	private $api;
-	/** @var TalkSession */
-	private $talkSession;
-	/** @var IUserSession */
-	private $userSession;
-	/** @var ILogger */
-	private $logger;
-	/** @var Manager */
-	private $manager;
-	/** @var IURLGenerator */
-	private $url;
-	/** @var INotificationManager */
-	private $notificationManager;
-	/** @var IAppManager */
-	private $appManager;
-	/** @var IRootFolder */
-	private $rootFolder;
+	private ?string $userId;
+	private IEventDispatcher $eventDispatcher;
+	private RoomController $api;
+	private TalkSession $talkSession;
+	private IUserSession $userSession;
+	private LoggerInterface $logger;
+	private Manager $manager;
+	private IURLGenerator $url;
+	private INotificationManager $notificationManager;
+	private IAppManager $appManager;
+	private IRootFolder $rootFolder;
 
 	public function __construct(string $appName,
 								IRequest $request,
@@ -88,12 +78,12 @@ class PageController extends Controller {
 								TalkSession $session,
 								IUserSession $userSession,
 								?string $UserId,
-								ILogger $logger,
+								LoggerInterface $logger,
 								Manager $manager,
 								IURLGenerator $url,
 								INotificationManager $notificationManager,
 								IAppManager $appManager,
-								IInitialStateService $initialStateService,
+								IInitialState $initialState,
 								ICacheFactory $memcacheFactory,
 								IRootFolder $rootFolder,
 								Config $talkConfig,
@@ -109,7 +99,7 @@ class PageController extends Controller {
 		$this->url = $url;
 		$this->notificationManager = $notificationManager;
 		$this->appManager = $appManager;
-		$this->initialStateService = $initialStateService;
+		$this->initialState = $initialState;
 		$this->memcacheFactory = $memcacheFactory;
 		$this->rootFolder = $rootFolder;
 		$this->talkConfig = $talkConfig;
@@ -152,7 +142,17 @@ class PageController extends Controller {
 	 * @return Response
 	 */
 	public function notFound(): Response {
-		return new RedirectResponse($this->url->linkToRouteAbsolute('spreed.Page.index'));
+		return $this->index();
+	}
+
+	/**
+	 * @PublicPage
+	 * @NoCSRFRequired
+	 *
+	 * @return Response
+	 */
+	public function duplicateSession(): Response {
+		return $this->index();
 	}
 
 	/**
@@ -175,8 +175,9 @@ class PageController extends Controller {
 		if ($token !== '') {
 			$room = null;
 			try {
-				$room = $this->manager->getRoomByToken($token);
+				$room = $this->manager->getRoomByToken($token, $this->userId);
 				$notification = $this->notificationManager->createNotification();
+				$shouldFlush = $this->notificationManager->defer();
 				try {
 					$notification->setApp('spreed')
 						->setUser($this->userId)
@@ -185,12 +186,16 @@ class PageController extends Controller {
 					$notification->setObject('call', $room->getToken());
 					$this->notificationManager->markProcessed($notification);
 				} catch (\InvalidArgumentException $e) {
-					$this->logger->logException($e, ['app' => 'spreed']);
+					$this->logger->error($e->getMessage(), ['exception' => $e]);
+				}
+
+				if ($shouldFlush) {
+					$this->notificationManager->flush();
 				}
 
 				// If the room is not a public room, check if the user is in the participants
-				if ($room->getType() !== Room::PUBLIC_CALL) {
-					$this->manager->getRoomForParticipant($room->getId(), $this->userId);
+				if ($room->getType() !== Room::TYPE_PUBLIC) {
+					$this->manager->getRoomForUser($room->getId(), $this->userId);
 				}
 			} catch (RoomNotFoundException $e) {
 				// Room not found, redirect to main page
@@ -200,8 +205,8 @@ class PageController extends Controller {
 			if ($room instanceof Room && $room->hasPassword()) {
 				// If the user joined themselves or is not found, they need the password.
 				try {
-					$participant = $room->getParticipant($this->userId);
-					$requirePassword = $participant->getParticipantType() === Participant::USER_SELF_JOINED;
+					$participant = $room->getParticipant($this->userId, false);
+					$requirePassword = $participant->getAttendee()->getParticipantType() === Participant::USER_SELF_JOINED;
 				} catch (ParticipantNotFoundException $e) {
 					$requirePassword = true;
 				}
@@ -212,6 +217,7 @@ class PageController extends Controller {
 					$passwordVerification = $room->verifyPassword($password);
 
 					if ($passwordVerification['result']) {
+						$this->talkSession->renewSessionId();
 						$this->talkSession->setPasswordForRoom($token, $password);
 					} else {
 						$this->talkSession->removePasswordForRoom($token);
@@ -226,8 +232,9 @@ class PageController extends Controller {
 				}
 			}
 		} else {
-			$response = $this->api->createRoom(Room::ONE_TO_ONE_CALL, $callUser);
-			if ($response->getStatus() !== Http::STATUS_NOT_FOUND) {
+			$response = $this->api->createRoom(Room::TYPE_ONE_TO_ONE, $callUser);
+			if ($response->getStatus() === Http::STATUS_OK
+				|| $response->getStatus() === Http::STATUS_CREATED) {
 				$data = $response->getData();
 				return $this->redirectToConversation($data['token']);
 			}
@@ -239,10 +246,20 @@ class PageController extends Controller {
 			$this->eventDispatcher->dispatchTyped(new LoadViewer());
 		}
 
+		$this->eventDispatcher->dispatch('\OCP\Collaboration\Resources::loadAdditionalScripts', new GenericEvent());
 		$response = new TemplateResponse($this->appName, 'index');
 		$csp = new ContentSecurityPolicy();
 		$csp->addAllowedConnectDomain('*');
 		$csp->addAllowedMediaDomain('blob:');
+		$csp->addAllowedWorkerSrcDomain('blob:');
+		$csp->addAllowedWorkerSrcDomain("'self'");
+		$csp->addAllowedChildSrcDomain('blob:');
+		$csp->addAllowedChildSrcDomain("'self'");
+		$csp->addAllowedScriptDomain('blob:');
+		$csp->addAllowedScriptDomain("'self'");
+		$csp->addAllowedConnectDomain('blob:');
+		$csp->addAllowedConnectDomain("'self'");
+		$csp->addAllowedImageDomain('https://*.tile.openstreetmap.org');
 		$response->setContentSecurityPolicy($csp);
 		return $response;
 	}
@@ -256,7 +273,7 @@ class PageController extends Controller {
 	protected function guestEnterRoom(string $token, string $password): Response {
 		try {
 			$room = $this->manager->getRoomByToken($token);
-			if ($room->getType() !== Room::PUBLIC_CALL) {
+			if ($room->getType() !== Room::TYPE_PUBLIC) {
 				throw new RoomNotFoundException();
 			}
 		} catch (RoomNotFoundException $e) {
@@ -274,6 +291,7 @@ class PageController extends Controller {
 
 			$passwordVerification = $room->verifyPassword($password);
 			if ($passwordVerification['result']) {
+				$this->talkSession->renewSessionId();
 				$this->talkSession->setPasswordForRoom($token, $password);
 			} else {
 				$this->talkSession->removePasswordForRoom($token);
@@ -294,6 +312,15 @@ class PageController extends Controller {
 		$csp = new ContentSecurityPolicy();
 		$csp->addAllowedConnectDomain('*');
 		$csp->addAllowedMediaDomain('blob:');
+		$csp->addAllowedWorkerSrcDomain('blob:');
+		$csp->addAllowedWorkerSrcDomain("'self'");
+		$csp->addAllowedChildSrcDomain('blob:');
+		$csp->addAllowedChildSrcDomain("'self'");
+		$csp->addAllowedScriptDomain('blob:');
+		$csp->addAllowedScriptDomain("'self'");
+		$csp->addAllowedConnectDomain('blob:');
+		$csp->addAllowedConnectDomain("'self'");
+		$csp->addAllowedImageDomain('https://*.tile.openstreetmap.org');
 		$response->setContentSecurityPolicy($csp);
 		return $response;
 	}
@@ -310,7 +337,7 @@ class PageController extends Controller {
 		if ($this->userId === null) {
 			try {
 				$room = $this->manager->getRoomByToken($token);
-				if ($room->getType() !== Room::PUBLIC_CALL) {
+				if ($room->getType() !== Room::TYPE_PUBLIC) {
 					throw new RoomNotFoundException();
 				}
 				return new RedirectResponse($this->url->linkToRoute('spreed.Page.showCall', ['token' => $token]));

@@ -26,40 +26,46 @@ namespace OCA\Talk\Notification;
 use OCA\Talk\Events\AddParticipantsEvent;
 use OCA\Talk\Events\JoinRoomUserEvent;
 use OCA\Talk\Events\RoomEvent;
+use OCA\Talk\Model\Attendee;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\EventDispatcher\IEventDispatcher;
+use OCP\IDBConnection;
 use OCP\Notification\IManager;
-use OCP\ILogger;
 use OCP\IUser;
 use OCP\IUserSession;
+use Psr\Log\LoggerInterface;
 
 class Listener {
+	protected IDBConnection $connection;
+	protected IManager $notificationManager;
+	protected ParticipantService $participantsService;
+	protected IEventDispatcher $dispatcher;
+	protected IUserSession $userSession;
+	protected ITimeFactory $timeFactory;
+	protected LoggerInterface $logger;
 
-	/** @var IManager */
-	protected $notificationManager;
-	/** @var IUserSession */
-	protected $userSession;
-	/** @var ITimeFactory */
-	protected $timeFactory;
-	/** @var ILogger */
-	protected $logger;
+	protected bool $shouldSendCallNotification = false;
 
-	/** @var bool */
-	protected $shouldSendCallNotification = false;
-
-	public function __construct(IManager $notificationManager,
+	public function __construct(IDBConnection $connection,
+								IManager $notificationManager,
+								ParticipantService $participantsService,
+								IEventDispatcher $dispatcher,
 								IUserSession $userSession,
 								ITimeFactory $timeFactory,
-								ILogger $logger) {
+								LoggerInterface $logger) {
+		$this->connection = $connection;
 		$this->notificationManager = $notificationManager;
+		$this->participantsService = $participantsService;
+		$this->dispatcher = $dispatcher;
 		$this->userSession = $userSession;
 		$this->timeFactory = $timeFactory;
 		$this->logger = $logger;
 	}
 
 	public static function register(IEventDispatcher $dispatcher): void {
-		$listener = static function (AddParticipantsEvent $event) {
+		$listener = static function (AddParticipantsEvent $event): void {
 			$room = $event->getRoom();
 
 			if ($room->getObjectType() === 'file') {
@@ -67,35 +73,35 @@ class Listener {
 			}
 
 			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
+			$listener = \OC::$server->get(self::class);
 			$listener->generateInvitation($room, $event->getParticipants());
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_USERS_ADD, $listener);
 
-		$listener = static function (JoinRoomUserEvent $event) {
+		$listener = static function (JoinRoomUserEvent $event): void {
 			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
+			$listener = \OC::$server->get(self::class);
 			$listener->markInvitationRead($event->getRoom());
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_ROOM_CONNECT, $listener);
 
-		$listener = static function (RoomEvent $event) {
+		$listener = static function (RoomEvent $event): void {
 			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
+			$listener = \OC::$server->get(self::class);
 			$listener->checkCallNotifications($event->getRoom());
 		};
 		$dispatcher->addListener(Room::EVENT_BEFORE_SESSION_JOIN_CALL, $listener);
 
-		$listener = static function (RoomEvent $event) {
+		$listener = static function (RoomEvent $event): void {
 			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
+			$listener = \OC::$server->get(self::class);
 			$listener->sendCallNotifications($event->getRoom());
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_SESSION_JOIN_CALL, $listener);
 
-		$listener = static function (RoomEvent $event) {
+		$listener = static function (RoomEvent $event): void {
 			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
+			$listener = \OC::$server->get(self::class);
 			$listener->markCallNotificationsRead($event->getRoom());
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_SESSION_JOIN_CALL, $listener);
@@ -115,6 +121,7 @@ class Listener {
 		$actorId = $actor->getUID();
 
 		$notification = $this->notificationManager->createNotification();
+		$shouldFlush = $this->notificationManager->defer();
 		$dateTime = $this->timeFactory->getDateTime();
 		try {
 			$notification->setApp('spreed')
@@ -124,22 +131,34 @@ class Listener {
 					'actorId' => $actor->getUID(),
 				]);
 		} catch (\InvalidArgumentException $e) {
-			$this->logger->logException($e, ['app' => 'spreed']);
+			$this->logger->error($e->getMessage(), ['exception' => $e]);
+			if ($shouldFlush) {
+				$this->notificationManager->flush();
+			}
 			return;
 		}
 
 		foreach ($participants as $participant) {
-			if ($actorId === $participant['userId']) {
+			if ($participant['actorType'] !== Attendee::ACTOR_USERS) {
+				// No user => no activity
+				continue;
+			}
+
+			if ($actorId === $participant['actorId']) {
 				// No activity for self-joining and the creator
 				continue;
 			}
 
 			try {
-				$notification->setUser($participant['userId']);
+				$notification->setUser($participant['actorId']);
 				$this->notificationManager->notify($notification);
 			} catch (\InvalidArgumentException $e) {
-				$this->logger->logException($e, ['app' => 'spreed']);
+				$this->logger->error($e->getMessage(), ['exception' => $e]);
 			}
+		}
+
+		if ($shouldFlush) {
+			$this->notificationManager->flush();
 		}
 	}
 
@@ -162,7 +181,7 @@ class Listener {
 				->setSubject('invitation');
 			$this->notificationManager->markProcessed($notification);
 		} catch (\InvalidArgumentException $e) {
-			$this->logger->logException($e, ['app' => 'spreed']);
+			$this->logger->error($e->getMessage(), ['exception' => $e]);
 			return;
 		}
 	}
@@ -201,6 +220,7 @@ class Listener {
 		$actorId = $actor instanceof IUser ? $actor->getUID() :'';
 
 		$notification = $this->notificationManager->createNotification();
+		$shouldFlush = $this->notificationManager->defer();
 		$dateTime = $this->timeFactory->getDateTime();
 		try {
 			// Remove all old notifications for this room
@@ -216,22 +236,36 @@ class Listener {
 			])
 				->setDateTime($dateTime);
 		} catch (\InvalidArgumentException $e) {
-			$this->logger->logException($e, ['app' => 'spreed']);
+			$this->logger->error($e->getMessage(), ['exception' => $e]);
+			if ($shouldFlush) {
+				$this->notificationManager->flush();
+			}
 			return;
 		}
 
-		$userIds = $room->getNotInCallUserIds();
-		foreach ($userIds as $userId) {
-			if ($actorId === $userId) {
-				continue;
-			}
+		$userIds = $this->participantsService->getParticipantUserIdsForCallNotifications($room);
+		$this->connection->beginTransaction();
+		try {
+			foreach ($userIds as $userId) {
+				if ($actorId === $userId) {
+					continue;
+				}
 
-			try {
-				$notification->setUser($userId);
-				$this->notificationManager->notify($notification);
-			} catch (\InvalidArgumentException $e) {
-				$this->logger->logException($e, ['app' => 'spreed']);
+				try {
+					$notification->setUser($userId);
+					$this->notificationManager->notify($notification);
+				} catch (\InvalidArgumentException $e) {
+					$this->logger->error($e->getMessage(), ['exception' => $e]);
+				}
 			}
+		} catch (\Throwable $e) {
+			$this->connection->rollBack();
+			throw $e;
+		}
+		$this->connection->commit();
+
+		if ($shouldFlush) {
+			$this->notificationManager->flush();
 		}
 	}
 
@@ -254,7 +288,7 @@ class Listener {
 				->setSubject('call');
 			$this->notificationManager->markProcessed($notification);
 		} catch (\InvalidArgumentException $e) {
-			$this->logger->logException($e, ['app' => 'spreed']);
+			$this->logger->error($e->getMessage(), ['exception' => $e]);
 			return;
 		}
 	}

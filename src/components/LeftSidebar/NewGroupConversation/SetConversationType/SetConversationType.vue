@@ -21,13 +21,12 @@
 
 <template>
 	<div class="conversation-type">
-		<input
-			id="checkbox"
+		<input id="checkbox"
 			type="checkbox"
 			class="checkbox"
 			:checked="value"
 			@change="handleInput">
-		<label for="checkbox" class="conversation-type__label">{{ t('spreed', 'Allow guests to join via link ') }}</label>
+		<label for="checkbox" class="conversation-type__label">{{ t('spreed', 'Allow guests to join via link') }}</label>
 	</div>
 </template>
 
@@ -43,7 +42,9 @@ export default {
 		},
 	},
 	methods: {
-		/** Emits the input event with the checked bulean as a value
+		/**
+		 * Emits the input event with the checked bulean as a value
+		 *
 		 * @param {object} event The checkbox click event object.
 		 */
 		handleInput(event) {

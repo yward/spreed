@@ -23,31 +23,30 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Events;
 
+use OCA\Talk\Participant;
 use OCA\Talk\Room;
 
 class ModifyRoomEvent extends RoomEvent {
-
-	/** @var string */
-	protected $parameter;
+	protected string $parameter;
 	/** @var int|string|bool */
 	protected $newValue;
 	/** @var int|string|bool|null */
 	protected $oldValue;
+	protected ?Participant $actor;
 
 
 	public function __construct(Room $room,
 								string $parameter,
 								$newValue,
-								$oldValue = null) {
+								$oldValue = null,
+								?Participant $actor = null) {
 		parent::__construct($room);
 		$this->parameter = $parameter;
 		$this->newValue = $newValue;
 		$this->oldValue = $oldValue;
+		$this->actor = $actor;
 	}
 
-	/**
-	 * @return string
-	 */
 	public function getParameter(): string {
 		return $this->parameter;
 	}
@@ -64,5 +63,9 @@ class ModifyRoomEvent extends RoomEvent {
 	 */
 	public function getOldValue() {
 		return $this->oldValue;
+	}
+
+	public function getActor(): ?Participant {
+		return $this->actor;
 	}
 }

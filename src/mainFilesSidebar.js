@@ -2,10 +2,12 @@
  * @copyright Copyright (c) 2019 John Molakvoæ <skjnldsv@protonmail.com>
  *
  * @author John Molakvoæ <skjnldsv@protonmail.com>
+ *
  * @author Joas Schilling <coding@schilljs.com>
+ *
  * @author Marco Ambrosini <marcoambrosini@pm.me>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -23,8 +25,10 @@
  */
 
 import Vue from 'vue'
+import VueObserveVisibility from 'vue-observe-visibility'
 import FilesSidebarCallViewApp from './FilesSidebarCallViewApp'
 import FilesSidebarTabApp from './FilesSidebarTabApp'
+import './init'
 
 // Store
 import Vuex from 'vuex'
@@ -37,6 +41,16 @@ import { getRequestToken } from '@nextcloud/auth'
 // Directives
 import { translate, translatePlural } from '@nextcloud/l10n'
 import VueShortKey from 'vue-shortkey'
+import vOutsideEvents from 'vue-outside-events'
+
+// Styles
+import '@nextcloud/dialogs/styles/toast.scss'
+import 'leaflet/dist/leaflet.css'
+
+// Leaflet icon patch
+import 'leaflet-defaulticon-compatibility/dist/leaflet-defaulticon-compatibility.webpack.css' // Re-uses images from ~leaflet package
+// eslint-disable-next-line
+import 'leaflet-defaulticon-compatibility'
 
 // CSP config for webpack dynamic chunk loading
 // eslint-disable-next-line
@@ -56,6 +70,10 @@ Vue.prototype.OCA = OCA
 
 Vue.use(Vuex)
 Vue.use(VueShortKey, { prevent: ['input', 'textarea', 'div'] })
+Vue.use(vOutsideEvents)
+Vue.use(VueObserveVisibility)
+
+store.dispatch('setMainContainerSelector', '.talkChatTab')
 
 const newCallView = () => new Vue({
 	store,

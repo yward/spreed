@@ -26,7 +26,8 @@ namespace OCA\Talk\Chat;
 
 use OCA\Talk\Events\ChatMessageEvent;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
-use OCA\Talk\GuestManager;
+use OCA\Talk\MatterbridgeManager;
+use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\Message;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
@@ -42,24 +43,16 @@ use OCP\IUserManager;
 class MessageParser {
 	public const EVENT_MESSAGE_PARSE = self::class . '::parseMessage';
 
-	/** @var IEventDispatcher */
-	private $dispatcher;
+	private IEventDispatcher $dispatcher;
 
-	/** @var IUserManager */
-	private $userManager;
+	private IUserManager $userManager;
 
-	/** @var GuestManager */
-	private $guestManager;
-
-	/** @var array */
-	protected $guestNames = [];
+	protected array $guestNames = [];
 
 	public function __construct(IEventDispatcher $dispatcher,
-								IUserManager $userManager,
-								GuestManager $guestManager) {
+								IUserManager $userManager) {
 		$this->dispatcher = $dispatcher;
 		$this->userManager = $userManager;
-		$this->guestManager = $guestManager;
 	}
 
 	public function createMessage(Room $room, Participant $participant, IComment $comment, IL10N $l): Message {
@@ -68,7 +61,12 @@ class MessageParser {
 
 	public function parseMessage(Message $message): void {
 		$message->setMessage($message->getComment()->getMessage(), []);
-		$message->setMessageType($message->getComment()->getVerb());
+
+		$verb = $message->getComment()->getVerb();
+		if ($verb === ChatManager::VERB_OBJECT_SHARED) {
+			$verb = ChatManager::VERB_SYSTEM;
+		}
+		$message->setMessageType($verb);
 		$this->setActor($message);
 
 		$event = new ChatMessageEvent($message);
@@ -78,16 +76,21 @@ class MessageParser {
 	protected function setActor(Message $message): void {
 		$comment = $message->getComment();
 
+		$actorId = $comment->getActorId();
 		$displayName = '';
-		if ($comment->getActorType() === 'users') {
+		if ($comment->getActorType() === Attendee::ACTOR_USERS) {
 			$user = $this->userManager->get($comment->getActorId());
 			$displayName = $user instanceof IUser ? $user->getDisplayName() : $comment->getActorId();
-		} elseif ($comment->getActorType() === 'guests') {
+		} elseif ($comment->getActorType() === Attendee::ACTOR_BRIDGED) {
+			$displayName = $comment->getActorId();
+			$actorId = MatterbridgeManager::BRIDGE_BOT_USERID;
+		} elseif ($comment->getActorType() === Attendee::ACTOR_GUESTS) {
 			if (isset($guestNames[$comment->getActorId()])) {
 				$displayName = $this->guestNames[$comment->getActorId()];
 			} else {
 				try {
-					$displayName = $this->guestManager->getNameBySessionHash($comment->getActorId());
+					$participant = $message->getRoom()->getParticipantByActor(Attendee::ACTOR_GUESTS, $comment->getActorId());
+					$displayName = $participant->getAttendee()->getDisplayName();
 				} catch (ParticipantNotFoundException $e) {
 				}
 				$this->guestNames[$comment->getActorId()] = $displayName;
@@ -98,7 +101,7 @@ class MessageParser {
 
 		$message->setActor(
 			$comment->getActorType(),
-			$comment->getActorId(),
+			$actorId,
 			$displayName
 		);
 	}

@@ -1,15 +1,15 @@
 /**
- * @typedef {Object} ClipboardContent
+ * @typedef {object} ClipboardContent
  * @property {('file'|'text'|'none')} kind content type (file or text)
  * @property {File[] | FileList | undefined} files files array
- * @property {String | undefined} text text content
+ * @property {string | undefined} text text content
  */
 
 /**
  * Fetches the clipboard content from the event.
  *
  * @param {ClipboardEvent} event native event
- * @returns {ClipboardContent}
+ * @return {ClipboardContent}
  */
 const fetchClipboardContent = function(event) {
 	const clipboardData = event.clipboardData
@@ -31,13 +31,13 @@ const fetchClipboardContent = function(event) {
 		}
 
 		if (files.length > 0) {
-			return { kind: 'file', files: files }
+			return { kind: 'file', files }
 		}
 	}
 
 	const text = clipboardData.getData('text/plain')
 
-	return { kind: 'text', text: text }
+	return { kind: 'text', text }
 }
 
 export {

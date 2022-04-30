@@ -21,10 +21,14 @@
 
 namespace OCA\Talk\Tests\php\Chat\Parser;
 
+use OCA\DAV\CardDAV\PhotoCache;
+use OCA\Talk\Chat\ChatManager;
 use OCA\Talk\Chat\Parser\SystemMessage;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\GuestManager;
+use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\Message;
+use OCA\Talk\Model\Session;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCA\Talk\Share\RoomShareProvider;
@@ -34,6 +38,8 @@ use OCP\Files\InvalidPathException;
 use OCP\Files\IRootFolder;
 use OCP\Files\Node;
 use OCP\Files\NotFoundException;
+use OCP\IGroup;
+use OCP\IGroupManager;
 use OCP\IL10N;
 use OCP\IPreview as IPreviewManager;
 use OCP\IURLGenerator;
@@ -51,12 +57,16 @@ class SystemMessageTest extends TestCase {
 
 	/** @var IUserManager|MockObject */
 	protected $userManager;
+	/** @var IGroupManager|MockObject */
+	protected $groupManager;
 	/** @var GuestManager|MockObject */
 	protected $guestManager;
 	/** @var IPreviewManager|MockObject */
 	protected $previewManager;
 	/** @var RoomShareProvider|MockObject */
 	protected $shareProvider;
+	/** @var PhotoCache|MockObject */
+	protected $photoCache;
 	/** @var IRootFolder|MockObject */
 	protected $rootFolder;
 	/** @var IURLGenerator|MockObject */
@@ -68,9 +78,11 @@ class SystemMessageTest extends TestCase {
 		parent::setUp();
 
 		$this->userManager = $this->createMock(IUserManager::class);
+		$this->groupManager = $this->createMock(IGroupManager::class);
 		$this->guestManager = $this->createMock(GuestManager::class);
 		$this->previewManager = $this->createMock(IPreviewManager::class);
 		$this->shareProvider = $this->createMock(RoomShareProvider::class);
+		$this->photoCache = $this->createMock(PhotoCache::class);
 		$this->rootFolder = $this->createMock(IRootFolder::class);
 		$this->url = $this->createMock(IURLGenerator::class);
 		$this->l = $this->createMock(IL10N::class);
@@ -96,22 +108,26 @@ class SystemMessageTest extends TestCase {
 			$mock = $this->getMockBuilder(SystemMessage::class)
 				->setConstructorArgs([
 					$this->userManager,
+					$this->groupManager,
 					$this->guestManager,
 					$this->previewManager,
 					$this->shareProvider,
+					$this->photoCache,
 					$this->rootFolder,
 					$this->url,
 				])
-				->setMethods($methods)
+				->onlyMethods($methods)
 				->getMock();
 			self::invokePrivate($mock, 'l', [$this->l]);
 			return $mock;
 		}
 		return new SystemMessage(
 			$this->userManager,
+			$this->groupManager,
 			$this->guestManager,
 			$this->previewManager,
 			$this->shareProvider,
+			$this->photoCache,
 			$this->rootFolder,
 			$this->url
 		);
@@ -133,6 +149,22 @@ class SystemMessageTest extends TestCase {
 			],
 			['conversation_renamed', ['oldName' => 'old', 'newName' => 'new'], 'actor',
 				'You renamed the conversation from "old" to "new"',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['description_set', ['newDescription' => 'New description'], 'recipient',
+				'{actor} set the description',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['description_set', ['newDescription' => 'New description'], 'actor',
+				'You set the description',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['description_removed', [], 'recipient',
+				'{actor} removed the description',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['description_removed', [], 'actor',
+				'You removed the description',
 				['actor' => ['id' => 'actor', 'type' => 'user']],
 			],
 			['call_started', [], 'recipient',
@@ -225,6 +257,22 @@ class SystemMessageTest extends TestCase {
 				'You removed {user}',
 				['actor' => ['id' => 'actor', 'type' => 'user'], 'user' => ['id' => 'user', 'type' => 'user']],
 			],
+			['group_added', ['group' => 'g1'], 'recipient',
+				'{actor} added group {group}',
+				['actor' => ['id' => 'actor', 'type' => 'user'], 'group' => ['id' => 'g1', 'type' => 'group']],
+			],
+			['group_added', ['group' => 'g1'], 'actor',
+				'You added group {group}',
+				['actor' => ['id' => 'actor', 'type' => 'user'], 'group' => ['id' => 'g1', 'type' => 'group']],
+			],
+			['group_removed', ['group' => 'g1'], 'recipient',
+				'{actor} removed group {group}',
+				['actor' => ['id' => 'actor', 'type' => 'user'], 'group' => ['id' => 'g1', 'type' => 'group']],
+			],
+			['group_removed', ['group' => 'g1'], 'actor',
+				'You removed group {group}',
+				['actor' => ['id' => 'actor', 'type' => 'user'], 'group' => ['id' => 'g1', 'type' => 'group']],
+			],
 			['moderator_promoted', ['user' => 'user'], 'recipient',
 				'{actor} promoted {user} to moderator',
 				['actor' => ['id' => 'actor', 'type' => 'user'], 'user' => ['id' => 'user', 'type' => 'user']],
@@ -297,6 +345,74 @@ class SystemMessageTest extends TestCase {
 				'You shared a file which is no longer available',
 				['actor' => ['id' => 'actor', 'type' => 'user']],
 			],
+			['read_only', [], 'recipient',
+				'{actor} locked the conversation',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['read_only', [], 'actor',
+				'You locked the conversation',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['read_only_off', [], 'recipient',
+				'{actor} unlocked the conversation',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['read_only_off', [], 'actor',
+				'You unlocked the conversation',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['listable_none', [], 'recipient',
+				'{actor} limited the conversation to the current participants',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['listable_none', [], 'actor',
+				'You limited the conversation to the current participants',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['listable_users', [], 'recipient',
+				'{actor} opened the conversation to registered users',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['listable_users', [], 'actor',
+				'You opened the conversation to registered users',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['listable_all', [], 'recipient',
+				'{actor} opened the conversation to registered and guest app users',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['listable_all', [], 'actor',
+				'You opened the conversation to registered and guest app users',
+				['actor' => ['id' => 'actor', 'type' => 'user']],
+			],
+			['object_shared', ['metaData' => ['id' => 'geo:52.5450511,13.3741463', 'type' => 'geo-location', 'name' => 'Nextcloud Berlin Office']], 'actor',
+				'{object}',
+				['actor' => ['id' => 'actor', 'type' => 'user'], 'object' => ['id' => 'geo:52.5450511,13.3741463', 'type' => 'geo-location', 'name' => 'Nextcloud Berlin Office']],
+			],
+			['object_shared', ['metaData' => ['id' => 'geo:48,15', 'type' => 'geo-location', 'name' => 'Coarse coordinate']], 'actor',
+				'{object}',
+				['actor' => ['id' => 'actor', 'type' => 'user'], 'object' => ['id' => 'geo:48,15', 'type' => 'geo-location', 'name' => 'Coarse coordinate']],
+			],
+			['object_shared', ['metaData' => ['id' => 'geo:-48.15,-16.23,-42.108', 'type' => 'geo-location', 'name' => 'Negative coordinate with altitude']], 'actor',
+				'{object}',
+				['actor' => ['id' => 'actor', 'type' => 'user'], 'object' => ['id' => 'geo:-48.15,-16.23,-42.108', 'type' => 'geo-location', 'name' => 'Negative coordinate with altitude']],
+			],
+			['object_shared', ['metaData' => ['id' => 'geo:52.5450511,13.3741463;crs=wgs84', 'type' => 'geo-location', 'name' => 'Coordinate with reference system']], 'actor',
+				'{object}',
+				['actor' => ['id' => 'actor', 'type' => 'user'], 'object' => ['id' => 'geo:52.5450511,13.3741463;crs=wgs84', 'type' => 'geo-location', 'name' => 'Coordinate with reference system']],
+			],
+			['object_shared', ['metaData' => ['id' => 'geo:52.5450511,13.3741463;u=42', 'type' => 'geo-location', 'name' => 'Coordinate with uncertainty']], 'actor',
+				'{object}',
+				['actor' => ['id' => 'actor', 'type' => 'user'], 'object' => ['id' => 'geo:52.5450511,13.3741463;u=42', 'type' => 'geo-location', 'name' => 'Coordinate with uncertainty']],
+			],
+			['object_shared', ['metaData' => ['id' => 'geo:52.5450511,13.3741463;crs=wgs84;u=42', 'type' => 'geo-location', 'name' => 'Coordinate with reference system and uncertainty']], 'actor',
+				'{object}',
+				['actor' => ['id' => 'actor', 'type' => 'user'], 'object' => ['id' => 'geo:52.5450511,13.3741463;crs=wgs84;u=42', 'type' => 'geo-location', 'name' => 'Coordinate with reference system and uncertainty']],
+			],
+			['object_shared', ['metaData' => ['id' => 'https://nextcloud.com', 'type' => 'geo-location', 'name' => 'Link instead of geo location']], 'actor',
+				'The shared location is malformed',
+				[],
+			],
 		];
 	}
 
@@ -312,42 +428,72 @@ class SystemMessageTest extends TestCase {
 		/** @var Participant|MockObject $participant */
 		$participant = $this->createMock(Participant::class);
 		if ($recipientId && strpos($recipientId, 'guest::') !== false) {
+			$attendee = Attendee::fromRow([
+				'actor_type' => 'guests',
+				'actor_id' => substr($recipientId, strlen('guest::')),
+			]);
+			$session = Session::fromRow([
+				'session_id' => substr($recipientId, strlen('guest::')),
+			]);
 			$participant->expects($this->atLeastOnce())
 				->method('isGuest')
 				->willReturn(true);
-			$participant->expects($this->atLeastOnce())
-				->method('getSessionId')
-				->willReturn(substr($recipientId, strlen('guest::')));
 		} else {
 			$participant->expects($this->atLeastOnce())
 				->method('isGuest')
 				->willReturn(false);
-			$participant->expects($this->atLeastOnce())
-				->method('getUser')
-				->willReturn($recipientId);
+			$attendee = Attendee::fromRow([
+				'actor_type' => 'users',
+				'actor_id' => $recipientId,
+			]);
+			$session = null;
 		}
+		$participant->expects($this->any())
+			->method('getAttendee')
+			->willReturn($attendee);
+		$participant->expects($this->any())
+			->method('getSession')
+			->willReturn($session);
 
 		/** @var IComment|MockObject $comment */
 		$comment = $this->createMock(IComment::class);
+		if ($recipientId && strpos($recipientId, 'guest::') !== false) {
+			$comment->method('getActorType')
+				->willReturn('guests');
+			$comment->method('getActorId')
+				->willReturn(substr($recipientId, strlen('guest::')));
+		} else {
+			$comment->method('getActorType')
+				->willReturn('users');
+			$comment->method('getActorId')
+				->willReturn($recipientId);
+		}
 
-		$parser = $this->getParser(['getActor', 'getUser', 'getGuest', 'parseCall', 'getFileFromShare']);
+		/** @var Room|MockObject $room */
+		$room = $this->createMock(Room::class);
+
+		$parser = $this->getParser(['getActorFromComment', 'getUser', 'getGroup', 'getGuest', 'parseCall', 'getFileFromShare']);
 		$parser->expects($this->once())
-			->method('getActor')
-			->with($comment)
+			->method('getActorFromComment')
+			->with($room, $comment)
 			->willReturn(['id' => 'actor', 'type' => 'user']);
 		$parser->expects($this->any())
 			->method('getUser')
 			->with($parameters['user'] ?? 'user')
 			->willReturn(['id' => $parameters['user'] ?? 'user', 'type' => 'user']);
 		$parser->expects($this->any())
+			->method('getGroup')
+			->with($parameters['group'] ?? 'group')
+			->willReturn(['id' => $parameters['group'] ?? 'group', 'type' => 'group']);
+		$parser->expects($this->any())
 			->method('getGuest')
-			->with($parameters['session'] ?? 'guest')
+			->with($room, $parameters['session'] ?? 'guest')
 			->willReturn(['id' => $parameters['session'] ?? 'guest', 'type' => 'guest']);
 
 		if ($message === 'call_ended') {
 			$parser->expects($this->once())
 				->method('parseCall')
-				->with($parameters)
+				->with($message, $parameters, ['actor' => ['id' => 'actor', 'type' => 'user']])
 				->willReturn([$expectedMessage, $expectedParameters]);
 		} else {
 			$parser->expects($this->never())
@@ -371,8 +517,6 @@ class SystemMessageTest extends TestCase {
 				->method('getFileFromShare');
 		}
 
-		/** @var Room|MockObject $room */
-		$room = $this->createMock(Room::class);
 		$chatMessage = new Message($room, $participant, $comment, $this->l);
 		$chatMessage->setMessage(json_encode([
 			'message' => $message,
@@ -385,7 +529,7 @@ class SystemMessageTest extends TestCase {
 		$this->assertSame($expectedParameters, $chatMessage->getMessageParameters());
 
 		if ($message === 'file_shared' && !is_subclass_of($parameters['share'], \Exception::class)) {
-			$this->assertSame('comment', $chatMessage->getMessageType());
+			$this->assertSame(ChatManager::VERB_MESSAGE, $chatMessage->getMessageType());
 		}
 	}
 
@@ -405,14 +549,15 @@ class SystemMessageTest extends TestCase {
 		/** @var IComment|MockObject $comment */
 		$comment = $this->createMock(IComment::class);
 
-		$parser = $this->getParser(['getActor']);
-		$parser->expects($this->any())
-			->method('getActor')
-			->with($comment)
-			->willReturn(['id' => 'actor', 'type' => 'user']);
-
 		/** @var Room|MockObject $room */
 		$room = $this->createMock(Room::class);
+
+		$parser = $this->getParser(['getActorFromComment']);
+		$parser->expects($this->any())
+			->method('getActorFromComment')
+			->with($room, $comment)
+			->willReturn(['id' => 'actor', 'type' => 'user']);
+
 		/** @var Participant|MockObject $participant */
 		$participant = $this->createMock(Participant::class);
 		$chatMessage = new Message($room, $participant, $comment, $this->l);
@@ -430,9 +575,12 @@ class SystemMessageTest extends TestCase {
 		$node->expects($this->once())
 			->method('getName')
 			->willReturn('name');
-		$node->expects($this->once())
+		$node->expects($this->atLeastOnce())
 			->method('getMimeType')
 			->willReturn('text/plain');
+		$node->expects($this->once())
+			->method('getSize')
+			->willReturn(65530);
 
 		$share = $this->createMock(IShare::class);
 		$share->expects($this->once())
@@ -469,6 +617,7 @@ class SystemMessageTest extends TestCase {
 			'type' => 'file',
 			'id' => '54',
 			'name' => 'name',
+			'size' => 65530,
 			'path' => 'name',
 			'link' => 'absolute-link',
 			'mimetype' => 'text/plain',
@@ -487,9 +636,12 @@ class SystemMessageTest extends TestCase {
 		$node->expects($this->once())
 			->method('getPath')
 			->willReturn('/owner/files/path/to/file/name');
-		$node->expects($this->once())
+		$node->expects($this->atLeastOnce())
 			->method('getMimeType')
 			->willReturn('httpd/unix-directory');
+		$node->expects($this->once())
+			->method('getSize')
+			->willReturn(65520);
 
 		$share = $this->createMock(IShare::class);
 		$share->expects($this->once())
@@ -520,15 +672,20 @@ class SystemMessageTest extends TestCase {
 		$participant->expects($this->once())
 			->method('isGuest')
 			->willReturn(false);
-		$participant->expects($this->once())
-			->method('getUser')
-			->willReturn('owner');
+		$attendee = Attendee::fromRow([
+			'actor_type' => 'users',
+			'actor_id' => 'owner',
+		]);
+		$participant->expects($this->any())
+			->method('getAttendee')
+			->willReturn($attendee);
 
 		$parser = $this->getParser();
 		$this->assertSame([
 			'type' => 'file',
 			'id' => '54',
 			'name' => 'name',
+			'size' => 65520,
 			'path' => 'path/to/file/name',
 			'link' => 'absolute-link-owner',
 			'mimetype' => 'httpd/unix-directory',
@@ -544,9 +701,12 @@ class SystemMessageTest extends TestCase {
 		$node->expects($this->once())
 			->method('getName')
 			->willReturn('name');
-		$node->expects($this->once())
+		$node->expects($this->atLeastOnce())
 			->method('getMimeType')
 			->willReturn('application/octet-stream');
+		$node->expects($this->once())
+			->method('getSize')
+			->willReturn(65510);
 
 		$share = $this->createMock(IShare::class);
 		$share->expects($this->once())
@@ -557,9 +717,13 @@ class SystemMessageTest extends TestCase {
 		$participant->expects($this->once())
 			->method('isGuest')
 			->willReturn(false);
-		$participant->expects($this->exactly(2))
-			->method('getUser')
-			->willReturn('user');
+		$attendee = Attendee::fromRow([
+			'actor_type' => 'users',
+			'actor_id' => 'user',
+		]);
+		$participant->expects($this->any())
+			->method('getAttendee')
+			->willReturn($attendee);
 
 		$this->shareProvider->expects($this->once())
 			->method('getShareById')
@@ -573,6 +737,9 @@ class SystemMessageTest extends TestCase {
 		$file->expects($this->once())
 			->method('getPath')
 			->willReturn('/user/files/Shared/different');
+		$file->expects($this->once())
+			->method('getSize')
+			->willReturn(65515);
 
 		$userFolder = $this->createMock(Folder::class);
 		$userFolder->expects($this->once())
@@ -602,6 +769,7 @@ class SystemMessageTest extends TestCase {
 			'type' => 'file',
 			'id' => '54',
 			'name' => 'different',
+			'size' => 65515,
 			'path' => 'Shared/different',
 			'link' => 'absolute-link-owner',
 			'mimetype' => 'application/octet-stream',
@@ -627,9 +795,13 @@ class SystemMessageTest extends TestCase {
 		$participant->expects($this->once())
 			->method('isGuest')
 			->willReturn(false);
-		$participant->expects($this->exactly(3))
-			->method('getUser')
-			->willReturn('user');
+		$attendee = Attendee::fromRow([
+			'actor_type' => 'users',
+			'actor_id' => 'user',
+		]);
+		$participant->expects($this->any())
+			->method('getAttendee')
+			->willReturn($attendee);
 
 		$this->shareProvider->expects($this->once())
 			->method('getShareById')
@@ -682,6 +854,9 @@ class SystemMessageTest extends TestCase {
 	 * @param array $expected
 	 */
 	public function testGetActor(string $actorType, array $guestData, array $userData, array $expected) {
+		/** @var Room|MockObject $room */
+		$room = $this->createMock(Room::class);
+
 		$chatMessage = $this->createMock(IComment::class);
 		$chatMessage->expects($this->once())
 			->method('getActorType')
@@ -697,7 +872,7 @@ class SystemMessageTest extends TestCase {
 		} else {
 			$parser->expects($this->once())
 				->method('getGuest')
-				->with('author-id')
+				->with($room, 'author-id')
 				->willReturn($guestData);
 		}
 
@@ -711,7 +886,7 @@ class SystemMessageTest extends TestCase {
 				->willReturn($userData);
 		}
 
-		$this->assertSame($expected, self::invokePrivate($parser, 'getActor', [$chatMessage]));
+		$this->assertSame($expected, self::invokePrivate($parser, 'getActorFromComment', [$room, $chatMessage]));
 	}
 
 	public function dataGetUser(): array {
@@ -780,134 +955,366 @@ class SystemMessageTest extends TestCase {
 				->method('get')
 				->with($uid)
 				->willReturn(null);
+			$this->expectException(ParticipantNotFoundException::class);
 		}
 
 		$this->assertSame($name, self::invokePrivate($parser, 'getDisplayName', [$uid]));
 	}
 
+	public function dataGetGroup(): array {
+		return [
+			['test', [], false, 'Test'],
+			['foo', ['admin' => 'Admin'], false, 'Bar'],
+			['admin', ['admin' => 'Administrator'], true, 'Administrator'],
+		];
+	}
+
+	/**
+	 * @dataProvider dataGetGroup
+	 * @param string $gid
+	 * @param array $cache
+	 * @param bool $cacheHit
+	 * @param string $name
+	 */
+	public function testGetGroup(string $gid, array $cache, bool $cacheHit, string $name): void {
+		$parser = $this->getParser(['getDisplayNameGroup']);
+
+		self::invokePrivate($parser, 'groupNames', [$cache]);
+
+		if (!$cacheHit) {
+			$parser->expects(self::once())
+				->method('getDisplayNameGroup')
+				->with($gid)
+				->willReturn($name);
+		} else {
+			$parser->expects(self::never())
+				->method('getDisplayNameGroup');
+		}
+
+		$result = self::invokePrivate($parser, 'getGroup', [$gid]);
+		self::assertSame('group', $result['type']);
+		self::assertSame($gid, $result['id']);
+		self::assertSame($name, $result['name']);
+	}
+
+	public function dataGetDisplayNameGroup(): array {
+		return [
+			['test', true, 'Test'],
+			['foo', false, 'foo'],
+		];
+	}
+
+	/**
+	 * @dataProvider dataGetDisplayNameGroup
+	 * @param string $gid
+	 * @param bool $validGroup
+	 * @param string $name
+	 */
+	public function testGetDisplayNameGroup(string $gid, bool $validGroup, string $name): void {
+		$parser = $this->getParser();
+
+		if ($validGroup) {
+			$group = $this->createMock(IGroup::class);
+			$group->expects(self::once())
+				->method('getDisplayName')
+				->willReturn($name);
+			$this->groupManager->expects(self::once())
+				->method('get')
+				->with($gid)
+				->willReturn($group);
+		} else {
+			$this->groupManager->expects(self::once())
+				->method('get')
+				->with($gid)
+				->willReturn(null);
+		}
+
+		self::assertSame($name, self::invokePrivate($parser, 'getDisplayNameGroup', [$gid]));
+	}
+
 	public function testGetGuest() {
-		$sessionHash = sha1('name');
+		$actorId = sha1('name');
+
+		/** @var Room|MockObject $room */
+		$room = $this->createMock(Room::class);
+
 		$parser = $this->getParser(['getGuestName']);
 		$parser->expects($this->once())
 			->method('getGuestName')
-			->with($sessionHash)
+			->with($room, $actorId)
 			->willReturn('name');
 
 		$this->assertSame([
 			'type' => 'guest',
-			'id' => 'guest/' . $sessionHash,
+			'id' => 'guest/' . $actorId,
 			'name' => 'name',
-		], self::invokePrivate($parser, 'getGuest', [$sessionHash]));
+		], self::invokePrivate($parser, 'getGuest', [$room, $actorId]));
 
 		// Cached call: no call to getGuestName() again
 		$this->assertSame([
 			'type' => 'guest',
-			'id' => 'guest/' . $sessionHash,
+			'id' => 'guest/' . $actorId,
 			'name' => 'name',
-		], self::invokePrivate($parser, 'getGuest', [$sessionHash]));
+		], self::invokePrivate($parser, 'getGuest', [$room, $actorId]));
 	}
 
 	public function testGetGuestName() {
-		$sessionHash = sha1('name');
-		$this->guestManager->expects($this->once())
-			->method('getNameBySessionHash')
-			->with($sessionHash)
-			->willReturn('name');
+		$actorId = sha1('name');
+
+		/** @var Room|MockObject $room */
+		$room = $this->createMock(Room::class);
+
+		$attendee = Attendee::fromParams([
+			'displayName' => 'name',
+		]);
+
+		/** @var Participant|MockObject $room */
+		$participant = $this->createMock(Participant::class);
+		$participant->method('getAttendee')
+			->willReturn($attendee);
+
+		$room->method('getParticipantByActor')
+			->with(Attendee::ACTOR_GUESTS, $actorId)
+			->willReturn($participant);
 
 		$parser = $this->getParser();
 		self::invokePrivate($parser, 'l', [$this->l]);
-		$this->assertSame('name (guest)', self::invokePrivate($parser, 'getGuestName', [$sessionHash]));
+		$this->assertSame('name (guest)', self::invokePrivate($parser, 'getGuestName', [$room, $actorId]));
 	}
 
 	public function testGetGuestNameThrows() {
-		$sessionHash = sha1('name');
-		$this->guestManager->expects($this->once())
-			->method('getNameBySessionHash')
-			->with($sessionHash)
+		$actorId = sha1('name');
+
+		/** @var Room|MockObject $room */
+		$room = $this->createMock(Room::class);
+
+		$room->method('getParticipantByActor')
+			->with(Attendee::ACTOR_GUESTS, $actorId)
 			->willThrowException(new ParticipantNotFoundException());
 
 		$parser = $this->getParser();
 		self::invokePrivate($parser, 'l', [$this->l]);
-		$this->assertSame('Guest', self::invokePrivate($parser, 'getGuestName', [$sessionHash]));
+		$this->assertSame('Guest', self::invokePrivate($parser, 'getGuestName', [$room, $actorId]));
 	}
 
 	public function dataParseCall(): array {
 		return [
 			'1 user + guests' => [
+				'call_ended',
 				['users' => ['user1'], 'guests' => 3, 'duration' => 42],
+				['type' => 'user', 'id' => 'admin', 'name' => 'Admin'],
 				[
 					'Call with {user1} and 3 guests (Duration "duration")',
 					['user1' => ['data' => 'user1']],
 				],
 			],
 			'2 users' => [
+				'call_ended',
 				['users' => ['user1', 'user2'], 'guests' => 0, 'duration' => 42],
+				['type' => 'user', 'id' => 'admin', 'name' => 'Admin'],
 				[
 					'Call with {user1} and {user2} (Duration "duration")',
 					['user1' => ['data' => 'user1'], 'user2' => ['data' => 'user2']],
 				],
 			],
 			'2 users + guests' => [
+				'call_ended',
 				['users' => ['user1', 'user2'], 'guests' => 1, 'duration' => 42],
+				['type' => 'user', 'id' => 'admin', 'name' => 'Admin'],
 				[
 					'Call with {user1}, {user2} and 1 guest (Duration "duration")',
 					['user1' => ['data' => 'user1'], 'user2' => ['data' => 'user2']],
 				],
 			],
 			'3 users' => [
+				'call_ended',
 				['users' => ['user1', 'user2', 'user3'], 'guests' => 0, 'duration' => 42],
+				['type' => 'user', 'id' => 'admin', 'name' => 'Admin'],
 				[
 					'Call with {user1}, {user2} and {user3} (Duration "duration")',
 					['user1' => ['data' => 'user1'], 'user2' => ['data' => 'user2'], 'user3' => ['data' => 'user3']],
 				],
 			],
 			'3 users + guests' => [
+				'call_ended',
 				['users' => ['user1', 'user2', 'user3'], 'guests' => 22, 'duration' => 42],
+				['type' => 'user', 'id' => 'admin', 'name' => 'Admin'],
 				[
 					'Call with {user1}, {user2}, {user3} and 22 guests (Duration "duration")',
 					['user1' => ['data' => 'user1'], 'user2' => ['data' => 'user2'], 'user3' => ['data' => 'user3']],
 				],
 			],
 			'4 users' => [
+				'call_ended',
 				['users' => ['user1', 'user2', 'user3', 'user4'], 'guests' => 0, 'duration' => 42],
+				['type' => 'user', 'id' => 'admin', 'name' => 'Admin'],
 				[
 					'Call with {user1}, {user2}, {user3} and {user4} (Duration "duration")',
 					['user1' => ['data' => 'user1'], 'user2' => ['data' => 'user2'], 'user3' => ['data' => 'user3'], 'user4' => ['data' => 'user4']],
 				],
 			],
 			'4 users + guests' => [
+				'call_ended',
 				['users' => ['user1', 'user2', 'user3', 'user4'], 'guests' => 4, 'duration' => 42],
+				['type' => 'user', 'id' => 'admin', 'name' => 'Admin'],
 				[
 					'Call with {user1}, {user2}, {user3}, {user4} and 4 guests (Duration "duration")',
 					['user1' => ['data' => 'user1'], 'user2' => ['data' => 'user2'], 'user3' => ['data' => 'user3'], 'user4' => ['data' => 'user4']],
 				],
 			],
 			'5 users' => [
+				'call_ended',
 				['users' => ['user1', 'user2', 'user3', 'user4', 'user5'], 'guests' => 0, 'duration' => 42],
+				['type' => 'user', 'id' => 'admin', 'name' => 'Admin'],
 				[
 					'Call with {user1}, {user2}, {user3}, {user4} and {user5} (Duration "duration")',
 					['user1' => ['data' => 'user1'], 'user2' => ['data' => 'user2'], 'user3' => ['data' => 'user3'], 'user4' => ['data' => 'user4'], 'user5' => ['data' => 'user5']],
 				],
 			],
 			'5 users + guests' => [
+				'call_ended',
 				['users' => ['user1', 'user2', 'user3', 'user4', 'user5'], 'guests' => 1, 'duration' => 42],
+				['type' => 'user', 'id' => 'admin', 'name' => 'Admin'],
 				[
 					'Call with {user1}, {user2}, {user3}, {user4} and 2 others (Duration "duration")',
 					['user1' => ['data' => 'user1'], 'user2' => ['data' => 'user2'], 'user3' => ['data' => 'user3'], 'user4' => ['data' => 'user4']],
 				],
 			],
 			'6 users' => [
+				'call_ended',
 				['users' => ['user1', 'user2', 'user3', 'user4', 'user5', 'user6'], 'guests' => 0, 'duration' => 42],
+				['type' => 'user', 'id' => 'admin', 'name' => 'Admin'],
 				[
 					'Call with {user1}, {user2}, {user3}, {user4} and 2 others (Duration "duration")',
 					['user1' => ['data' => 'user1'], 'user2' => ['data' => 'user2'], 'user3' => ['data' => 'user3'], 'user4' => ['data' => 'user4']],
 				],
 			],
 			'6 users + guests' => [
+				'call_ended',
 				['users' => ['user1', 'user2', 'user3', 'user4', 'user5', 'user6'], 'guests' => 2, 'duration' => 42],
+				['type' => 'user', 'id' => 'admin', 'name' => 'Admin'],
 				[
 					'Call with {user1}, {user2}, {user3}, {user4} and 4 others (Duration "duration")',
 					['user1' => ['data' => 'user1'], 'user2' => ['data' => 'user2'], 'user3' => ['data' => 'user3'], 'user4' => ['data' => 'user4']],
+				],
+			],
+
+			// Meetings
+			'meeting guests only' => [
+				'call_ended_everyone',
+				['users' => [], 'guests' => 33, 'duration' => 42],
+				['type' => 'guest', 'id' => sha1('guest1'), 'name' => 'guest1'],
+				[
+					'{actor} ended the call with 32 guests (Duration "duration")',
+					[],
+				],
+			],
+			'meeting 2 user' => [
+				'call_ended_everyone',
+				['users' => ['user1', 'user2'], 'guests' => 3, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with {user1} and 3 guests (Duration "duration")',
+					['user1' => ['data' => 'user2']],
+				],
+			],
+			'meeting 1 user + guests' => [
+				'call_ended_everyone',
+				['users' => ['user1'], 'guests' => 3, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with 3 guests (Duration "duration")',
+					[],
+				],
+			],
+			'meeting 3 users' => [
+				'call_ended_everyone',
+				['users' => ['user1', 'user2', 'user3'], 'guests' => 0, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with {user1} and {user2} (Duration "duration")',
+					['user1' => ['data' => 'user2'], 'user2' => ['data' => 'user3']],
+				],
+			],
+			'meeting 2 users + guests' => [
+				'call_ended_everyone',
+				['users' => ['user1', 'user2'], 'guests' => 1, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with {user1} and 1 guest (Duration "duration")',
+					['user1' => ['data' => 'user2']],
+				],
+			],
+			'meeting 4 users' => [
+				'call_ended_everyone',
+				['users' => ['user1', 'user2', 'user3', 'user4'], 'guests' => 0, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with {user1}, {user2} and {user3} (Duration "duration")',
+					['user1' => ['data' => 'user2'], 'user2' => ['data' => 'user3'], 'user3' => ['data' => 'user4']],
+				],
+			],
+			'meeting 3 users + guests' => [
+				'call_ended_everyone',
+				['users' => ['user1', 'user2', 'user3'], 'guests' => 22, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with {user1}, {user2} and 22 guests (Duration "duration")',
+					['user1' => ['data' => 'user2'], 'user2' => ['data' => 'user3']],
+				],
+			],
+			'meeting 5 users' => [
+				'call_ended_everyone',
+				['users' => ['user1', 'user2', 'user3', 'user4', 'user5'], 'guests' => 0, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with {user1}, {user2}, {user3} and {user4} (Duration "duration")',
+					['user1' => ['data' => 'user2'], 'user2' => ['data' => 'user3'], 'user3' => ['data' => 'user4'], 'user4' => ['data' => 'user5']],
+				],
+			],
+			'meeting 4 users + guests' => [
+				'call_ended_everyone',
+				['users' => ['user1', 'user2', 'user3', 'user4'], 'guests' => 4, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with {user1}, {user2}, {user3} and 4 guests (Duration "duration")',
+					['user1' => ['data' => 'user2'], 'user2' => ['data' => 'user3'], 'user3' => ['data' => 'user4']],
+				],
+			],
+			'meeting 6 users' => [
+				'call_ended_everyone',
+				['users' => ['user1', 'user2', 'user3', 'user4', 'user5', 'user6'], 'guests' => 0, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with {user1}, {user2}, {user3}, {user4} and {user5} (Duration "duration")',
+					['user1' => ['data' => 'user2'], 'user2' => ['data' => 'user3'], 'user3' => ['data' => 'user4'], 'user4' => ['data' => 'user5'], 'user5' => ['data' => 'user6']],
+				],
+			],
+			'meeting 5 users + guests' => [
+				'call_ended_everyone',
+				['users' => ['user1', 'user2', 'user3', 'user4', 'user5'], 'guests' => 1, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with {user1}, {user2}, {user3}, {user4} and 1 guest (Duration "duration")',
+					['user1' => ['data' => 'user2'], 'user2' => ['data' => 'user3'], 'user3' => ['data' => 'user4'], 'user4' => ['data' => 'user5']],
+				],
+			],
+			'meeting 7 users' => [
+				'call_ended_everyone',
+				['users' => ['user1', 'user2', 'user3', 'user4', 'user5', 'user6', 'user7'], 'guests' => 0, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with {user1}, {user2}, {user3}, {user4} and 2 others (Duration "duration")',
+					['user1' => ['data' => 'user2'], 'user2' => ['data' => 'user3'], 'user3' => ['data' => 'user4'], 'user4' => ['data' => 'user5']],
+				],
+			],
+			'meeting 6 users + guests' => [
+				'call_ended_everyone',
+				['users' => ['user1', 'user2', 'user3', 'user4', 'user5', 'user6'], 'guests' => 2, 'duration' => 42],
+				['type' => 'user', 'id' => 'user1', 'name' => 'user1'],
+				[
+					'{actor} ended the call with {user1}, {user2}, {user3}, {user4} and 3 others (Duration "duration")',
+					['user1' => ['data' => 'user2'], 'user2' => ['data' => 'user3'], 'user3' => ['data' => 'user4'], 'user4' => ['data' => 'user5']],
 				],
 			],
 		];
@@ -918,7 +1325,7 @@ class SystemMessageTest extends TestCase {
 	 * @param array $parameters
 	 * @param array $expected
 	 */
-	public function testParseCall(array $parameters, array $expected) {
+	public function testParseCall(string $message, array $parameters, array $actor, array $expected) {
 		$parser = $this->getParser(['getDuration', 'getUser']);
 		$parser->expects($this->once())
 			->method('getDuration')
@@ -931,7 +1338,10 @@ class SystemMessageTest extends TestCase {
 				return ['data' => $user];
 			});
 
-		$this->assertSame($expected, self::invokePrivate($parser, 'parseCall', [$parameters]));
+		// Prepend the actor
+		$expected[1]['actor'] = $actor;
+
+		$this->assertEquals($expected, self::invokePrivate($parser, 'parseCall', [$message, $parameters, ['actor' => $actor]]));
 	}
 
 	public function dataGetDuration(): array {

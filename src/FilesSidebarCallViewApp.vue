@@ -21,21 +21,26 @@
   -->
 
 <template>
-	<div v-if="isInFile">
-		<CallView
-			v-show="isInCall"
+	<div v-if="isInFile" class="talk-sidebar-callview">
+		<TopBar v-show="showCallView"
+			:is-in-call="true"
+			:is-sidebar="true" />
+		<CallView v-show="showCallView"
 			:token="token"
 			:is-sidebar="true" />
-		<PreventUnload :when="isInCall" />
+		<PreventUnload :when="warnLeaving" />
 	</div>
 </template>
 
 <script>
-import { PARTICIPANT } from './constants'
 import CallView from './components/CallView/CallView'
+import TopBar from './components/TopBar/TopBar'
 import PreventUnload from 'vue-prevent-unload'
-import browserCheck from './mixins/browserCheck'
+import sessionIssueHandler from './mixins/sessionIssueHandler'
+import isInCall from './mixins/isInCall'
+import participant from './mixins/participant'
 import talkHashCheck from './mixins/talkHashCheck'
+import '@nextcloud/dialogs/styles/toast.scss'
 
 export default {
 
@@ -44,10 +49,13 @@ export default {
 	components: {
 		CallView,
 		PreventUnload,
+		TopBar,
 	},
 
 	mixins: [
-		browserCheck,
+		sessionIssueHandler,
+		isInCall,
+		participant,
 		talkHashCheck,
 	],
 
@@ -86,38 +94,31 @@ export default {
 		 * Note that false is returned too when the sidebar is closed, even if
 		 * the conversation is active in the current file.
 		 *
-		 * @returns {Boolean} true if the sidebar is opened in the file, false
+		 * @return {boolean} true if the sidebar is opened in the file, false
 		 *          otherwise.
 		 */
 		isInFile() {
-			if (this.fileId !== this.fileIdForToken) {
-				return false
-			}
-
-			return true
+			return this.fileId === this.fileIdForToken
 		},
 
-		isInCall() {
+		showCallView() {
 			// FIXME Remove participants as soon as the file changes so this
 			// condition is not needed.
 			if (!this.isInFile) {
 				return false
 			}
 
-			const participantIndex = this.$store.getters.getParticipantIndex(this.token, this.$store.getters.getParticipantIdentifier())
-			if (participantIndex === -1) {
-				return false
-			}
+			return this.isInCall
+		},
 
-			const participant = this.$store.getters.getParticipant(this.token, participantIndex)
-
-			return participant.inCall !== PARTICIPANT.CALL_FLAG.DISCONNECTED
+		warnLeaving() {
+			return !this.isLeavingAfterSessionIssue && this.showCallView
 		},
 	},
 
 	watch: {
-		isInCall: function(isInCall) {
-			if (isInCall) {
+		showCallView(showCallView) {
+			if (showCallView) {
 				this.replaceSidebarHeaderContentsWithCallView()
 			} else {
 				this.restoreSidebarHeaderContents()
@@ -133,9 +134,9 @@ export default {
 		 * when the FileInfo has been set and it does not match the current
 		 * conversation.
 		 *
-		 * @param {Object} fileInfo the watched FileInfo
+		 * @param {object} fileInfo the watched FileInfo
 		 */
-		fileInfo: function(fileInfo) {
+		fileInfo(fileInfo) {
 			if (!fileInfo) {
 				return
 			}
@@ -155,11 +156,6 @@ export default {
 
 			this.restoreSidebarHeaderContents()
 		},
-	},
-
-	mounted() {
-		// see browserCheck mixin
-		this.checkBrowser()
 	},
 
 	methods: {
@@ -253,7 +249,7 @@ export default {
 				}
 			}
 
-			header.append(this.$el)
+			header.appendChild(this.$el)
 		},
 
 		/**
@@ -278,7 +274,7 @@ export default {
 
 			const headerAction = document.querySelector('.app-sidebar-header__action')
 			if (headerAction) {
-				headerAction.append(this.$el)
+				headerAction.appendChild(this.$el)
 			}
 		},
 	},

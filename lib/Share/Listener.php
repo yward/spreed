@@ -32,24 +32,26 @@ use Symfony\Component\EventDispatcher\GenericEvent;
 
 class Listener {
 	public static function register(IEventDispatcher $dispatcher): void {
+		/**
+		 * @psalm-suppress UndefinedClass
+		 */
 		$dispatcher->addListener('OCP\Share::preShare', [self::class, 'listenPreShare'], 1000);
 		$dispatcher->addListener(VerifyMountPointEvent::class, [self::class, 'listenVerifyMountPointEvent'], 1000);
 	}
 
 	public static function listenPreShare(GenericEvent $event): void {
 		/** @var self $listener */
-		$listener = \OC::$server->query(self::class);
+		$listener = \OC::$server->get(self::class);
 		$listener->overwriteShareTarget($event);
 	}
 
 	public static function listenVerifyMountPointEvent(VerifyMountPointEvent $event): void {
 		/** @var self $listener */
-		$listener = \OC::$server->query(self::class);
+		$listener = \OC::$server->get(self::class);
 		$listener->overwriteMountPoint($event);
 	}
 
-	/** @var Config */
-	protected $config;
+	protected Config $config;
 
 	public function __construct(Config $config) {
 		$this->config = $config;
@@ -79,7 +81,23 @@ class Listener {
 		}
 
 		if ($event->getParent() === RoomShareProvider::TALK_FOLDER_PLACEHOLDER) {
-			$parent = $this->config->getAttachmentFolder($view->getOwner('/'));
+			try {
+				$userId = $view->getOwner('/');
+			} catch (\Exception $e) {
+				// If we fail to get the owner of the view from the cache,
+				// e.g. because the user never logged in but a cron job runs
+				// We fallback to calculating the owner from the root of the view:
+				if (substr_count($view->getRoot(), '/') >= 2) {
+					// /37c09aa0-1b92-4cf6-8c66-86d8cac8c1d0/files
+					[, $userId, ] = explode('/', $view->getRoot(), 3);
+				} else {
+					// Something weird is going on, we can't fallback more
+					// so for now we don't overwrite the share path ¯\_(ツ)_/¯
+					return;
+				}
+			}
+
+			$parent = $this->config->getAttachmentFolder($userId);
 			$event->setParent($parent);
 			if (!$event->getView()->is_dir($parent)) {
 				$event->getView()->mkdir($parent);

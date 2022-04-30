@@ -32,9 +32,7 @@ use OCP\EventDispatcher\IEventListener;
 use OCP\Security\CSP\AddContentSecurityPolicyEvent;
 
 class CSPListener implements IEventListener {
-
-	/** @var Config */
-	private $config;
+	private Config $config;
 
 	public function __construct(Config $config) {
 		$this->config = $config;
@@ -46,6 +44,16 @@ class CSPListener implements IEventListener {
 		}
 
 		$csp = new ContentSecurityPolicy();
+		$csp->addAllowedImageDomain('https://*.tile.openstreetmap.org');
+		$csp->addAllowedMediaDomain('blob:');
+		$csp->addAllowedWorkerSrcDomain('blob:');
+		$csp->addAllowedWorkerSrcDomain("'self'");
+		$csp->addAllowedChildSrcDomain('blob:');
+		$csp->addAllowedChildSrcDomain("'self'");
+		$csp->addAllowedScriptDomain('blob:');
+		$csp->addAllowedScriptDomain("'self'");
+		$csp->addAllowedConnectDomain('blob:');
+		$csp->addAllowedConnectDomain("'self'");
 		foreach ($this->config->getAllServerUrlsForCSP() as $server) {
 			$csp->addAllowedConnectDomain($server);
 		}

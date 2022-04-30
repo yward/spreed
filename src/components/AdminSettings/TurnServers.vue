@@ -34,19 +34,21 @@
 			<span v-else class="icon icon-loading-small" />
 		</h2>
 
+		<!-- eslint-disable-next-line vue/no-v-html -->
 		<p class="settings-hint" v-html="documentationHint" />
 
 		<ul class="turn-servers">
 			<transition-group name="fade" tag="li">
-				<TurnServer
-					v-for="(server, index) in servers"
+				<TurnServer v-for="(server, index) in servers"
 					:key="`server${index}`"
+					:schemes.sync="servers[index].schemes"
 					:server.sync="servers[index].server"
 					:secret.sync="servers[index].secret"
 					:protocols.sync="servers[index].protocols"
 					:index="index"
 					:loading="loading"
-					@removeServer="removeServer"
+					@remove-server="removeServer"
+					@update:schemes="debounceUpdateServers"
 					@update:server="debounceUpdateServers"
 					@update:secret="debounceUpdateServers"
 					@update:protocols="debounceUpdateServers" />
@@ -82,14 +84,14 @@ export default {
 
 	computed: {
 		documentationHint() {
-			return t('spreed', 'A TURN server is used to proxy the traffic from participants behind a firewall. If individual participants can not connect to others a TURN server is mostlikely required. See {linkstart}this documentation{linkend} for setup instructions.')
+			return t('spreed', 'A TURN server is used to proxy the traffic from participants behind a firewall. If individual participants cannot connect to others a TURN server is most likely required. See {linkstart}this documentation{linkend} for setup instructions.')
 				.replace('{linkstart}', '<a  target="_blank" rel="noreferrer nofollow" class="external" href="https://nextcloud-talk.readthedocs.io/en/latest/TURN/">')
 				.replace('{linkend}', ' ↗</a>')
 		},
 	},
 
 	beforeMount() {
-		this.servers = loadState('talk', 'turn_servers')
+		this.servers = loadState('spreed', 'turn_servers')
 	},
 
 	methods: {
@@ -100,6 +102,7 @@ export default {
 
 		newServer() {
 			this.servers.push({
+				schemes: 'turn', // default to turn only
 				server: '',
 				secret: '',
 				protocols: 'udp,tcp', // default to udp AND tcp
@@ -115,15 +118,16 @@ export default {
 
 			this.servers.forEach((server) => {
 				const data = {
+					schemes: server.schemes,
 					server: server.server,
 					secret: server.secret,
 					protocols: server.protocols,
 				}
 
 				if (data.server.startsWith('https://')) {
-					data.server = data.server.substr(8)
+					data.server = data.server.slice(8)
 				} else if (data.server.startsWith('http://')) {
-					data.server = data.server.substr(7)
+					data.server = data.server.slice(7)
 				}
 
 				if (data.secret === '') {

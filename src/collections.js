@@ -3,7 +3,7 @@
  *
  * @author Julius Härtl <jus@bitgrid.net>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -21,7 +21,6 @@
  */
 
 import Vue from 'vue'
-import RoomSelector from './views/RoomSelector'
 
 // eslint-disable-next-line no-unexpected-multiline
 (function(OCP, OC) {
@@ -41,15 +40,23 @@ import RoomSelector from './views/RoomSelector'
 				const container = document.createElement('div')
 				container.id = 'spreed-room-select'
 				const body = document.getElementById('body-user')
-				body.append(container)
+				body.appendChild(container)
+				const RoomSelector = () => import('./views/RoomSelector')
 				const ComponentVM = new Vue({
-					render: h => h(RoomSelector),
+					render: h => h(RoomSelector, {
+						props: {
+							// Even if it is used from Talk the Collections menu is
+							// independently loaded, so the properties that depend
+							// on the store need to be explicitly injected.
+							container: window.store ? window.store.getters.getMainContainerSelector() : undefined,
+						},
+					}),
 				})
 				ComponentVM.$mount(container)
 				ComponentVM.$root.$on('close', () => {
 					ComponentVM.$el.remove()
 					ComponentVM.$destroy()
-					reject(new Error('User canceled resource selection'))
+					reject(new Error('User cancelled resource selection'))
 				})
 				ComponentVM.$root.$on('select', (id) => {
 					resolve(id)

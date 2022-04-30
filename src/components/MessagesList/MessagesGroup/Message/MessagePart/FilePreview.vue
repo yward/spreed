@@ -1,7 +1,9 @@
 <!--
   - @copyright Copyright (c) 2019 Joas Schilling <coding@schilljs.com>
+  - @copyright Copyright (c) 2020 Marco Ambrosini <marcoambrosini@pm.me>
   -
   - @author Joas Schilling <coding@schilljs.com>
+  - @author Marco Ambrosini <marcoambrosini@pm.me>
   -
   - @license GNU AGPL version 3 or any later version
   -
@@ -20,63 +22,199 @@
 -->
 
 <template>
-	<a :href="link"
-		class="container"
-		:class="{ 'is-viewer-available': isViewerAvailable }"
-		target="_blank"
-		rel="noopener noreferrer"
-		@click="showPreview">
-		<img v-if="!isLoading && !failed"
-			:class="previewSizeClass"
-			alt=""
-			:src="previewUrl">
-		<img v-if="!isLoading && failed"
-			:class="previewSizeClass"
-			alt=""
-			:src="defaultIconUrl">
+	<file-preview v-bind="filePreview"
+		:tabindex="wrapperTabIndex"
+		class="file-preview"
+		:class="{ 'file-preview--viewer-available': isViewerAvailable,
+			'file-preview--upload-editor': isUploadEditor,
+			'file-preview--shared-items-grid': isSharedItemsTab && !rowLayout,
+			'file-preview--row-layout': rowLayout }"
+		@click.exact="handleClick"
+		@keydown.enter="handleClick">
+		<div v-if="!isLoading"
+			class="image-container"
+			:class="{'playable': isPlayable}">
+			<span v-if="isPlayable && !smallPreview" class="play-video-button">
+				<PlayCircleOutline :size="48"
+					decorative
+					fill-color="#ffffff"
+					title="" />
+			</span>
+			<img v-if="!failed"
+				v-tooltip="previewTooltip"
+				:class="previewImageClass"
+				class="file-preview__image"
+				alt=""
+				:src="previewUrl">
+			<img v-else
+				:class="previewImageClass"
+				alt=""
+				:src="defaultIconUrl">
+		</div>
 		<span v-if="isLoading"
+			v-tooltip="previewTooltip"
 			class="preview loading" />
-		<strong>{{ name }}</strong>
-	</a>
+		<Button v-if="isUploadEditor"
+			class="remove-file"
+			tabindex="1"
+			type="primary"
+			:aria-label="removeAriaLabel"
+			@click="$emit('remove-file', id)">
+			<template #icon>
+				<Close decorative
+					title="" />
+			</template>
+		</Button>
+		<ProgressBar v-if="isTemporaryUpload && !isUploadEditor" :value="uploadProgress" />
+		<div v-if="shouldShowFileDetail" class="name-container">
+			{{ fileDetail }}
+		</div>
+	</file-preview>
 </template>
 
 <script>
-import { generateUrl, imagePath } from '@nextcloud/router'
+import { generateUrl, imagePath, generateRemoteUrl } from '@nextcloud/router'
+import ProgressBar from '@nextcloud/vue/dist/Components/ProgressBar'
+import Tooltip from '@nextcloud/vue/dist/Directives/Tooltip'
+import Close from 'vue-material-design-icons/Close'
+import PlayCircleOutline from 'vue-material-design-icons/PlayCircleOutline'
+import { getCapabilities } from '@nextcloud/capabilities'
+import { encodePath } from '@nextcloud/paths'
+import AudioPlayer from './AudioPlayer'
+import Button from '@nextcloud/vue/dist/Components/Button'
+
+const PREVIEW_TYPE = {
+	TEMPORARY: 0,
+	MIME_ICON: 1,
+	DIRECT: 2,
+	PREVIEW: 3,
+}
 
 export default {
 	name: 'FilePreview',
+
+	components: {
+		ProgressBar,
+		Close,
+		PlayCircleOutline,
+		Button,
+	},
+
+	directives: {
+		tooltip: Tooltip,
+	},
+
 	props: {
-		type: {
-			type: String,
-			required: true,
-		},
+		/**
+		 * File id
+		 */
 		id: {
 			type: String,
 			required: true,
 		},
+		/**
+		 * File name
+		 */
 		name: {
 			type: String,
 			required: true,
 		},
+		/**
+		 * File path relative to the user's home storage,
+		 * or link share root, includes the file name.
+		 */
 		path: {
 			type: String,
-			required: true,
+			default: '',
 		},
+		/**
+		 * File size in bytes
+		 */
+		size: {
+			type: Number,
+			default: -1,
+		},
+		/**
+		 * Download link
+		 */
 		link: {
 			type: String,
 			default: '',
 		},
+		/**
+		 * Mime type
+		 */
 		mimetype: {
 			type: String,
 			default: '',
 		},
+		/**
+		 * Whether a preview is available, string "yes" for yes
+		 * otherwise the string "no"
+		 */
+		// FIXME: use booleans here
 		previewAvailable: {
 			type: String,
 			default: 'no',
 		},
-		previewSize: {
+
+		/**
+		 * Whether to render a small preview to embed in replies
+		 */
+		smallPreview: {
+			type: Boolean,
+			default: false,
+		},
+		/**
+		 * Upload id from the file upload store.
+		 *
+		 * In case this component is used to display a file that is being uploaded
+		 * this parameter is used to access the file upload status in the store
+		 */
+		uploadId: {
 			type: Number,
-			default: 128,
+			default: null,
+		},
+		/**
+		 * File upload index from the file upload store.
+		 *
+		 * In case this component is used to display a file that is being uploaded
+		 * this parameter is used to access the file upload status in the store
+		 */
+		index: {
+			type: String,
+			default: '',
+		},
+		/**
+		 * Whether the container is the upload editor.
+		 * True if this component is used in the upload editor.
+		 */
+		// FIXME: file-preview should be encapsulated and not be aware of its surroundings
+		isUploadEditor: {
+			type: Boolean,
+			default: false,
+		},
+		/**
+		 * The link to the file for displaying it in the preview
+		 */
+		localUrl: {
+			type: String,
+			default: '',
+		},
+
+		isVoiceMessage: {
+			type: Boolean,
+			default: false,
+		},
+
+		rowLayout: {
+			type: Boolean,
+			default: false,
+		},
+
+		isSharedItemsTab: {
+			type: Boolean,
+			default: false,
 		},
 	},
 	data() {
@@ -86,27 +224,142 @@ export default {
 		}
 	},
 	computed: {
+		shouldShowFileDetail() {
+			if (this.isSharedItemsTab && !this.rowLayout) {
+				return false
+			}
+			// display the file detail below the preview if the preview
+			// is not easily recognizable, when:
+			return (
+				// the file is not an image
+				!this.mimetype.startsWith('image/')
+				// the image has no preview (ex: disabled on server)
+				|| (this.previewAvailable !== 'yes' && !this.localUrl)
+				// the preview failed loading
+				|| this.failed
+				// always show in upload editor
+				|| this.isUploadEditor
+			)
+		},
+
+		fileDetail() {
+			return this.name
+		},
+
+		previewTooltip() {
+			if (this.shouldShowFileDetail) {
+				// no tooltip as the file name is already visible directly
+				return null
+			}
+			return {
+				content: this.name,
+				delay: { show: 500 },
+				placement: 'left',
+			}
+		},
+
+		// This is used to decide which outer element type to use
+		// a or div
+		filePreview() {
+			if (this.isUploadEditor || this.isTemporaryUpload) {
+				return {
+					is: 'div',
+					tag: 'div',
+				}
+			} else if (this.isVoiceMessage) {
+				return {
+					is: AudioPlayer,
+					name: this.name,
+					path: this.path,
+					link: this.link,
+				}
+			}
+			return {
+				is: 'a',
+				tag: 'a',
+				href: this.link,
+				target: '_blank',
+				rel: 'noopener noreferrer',
+			}
+		},
+
 		defaultIconUrl() {
 			return imagePath('core', 'filetypes/file')
 		},
-		previewSizeClass() {
-			if (this.previewSize === 64) {
-				return 'preview-64'
-			}
-			return 'preview'
-		},
-		previewUrl() {
-			if (this.previewAvailable !== 'yes' || this.$store.getters.getUserId() === null) {
-				return OC.MimeType.getIconUrl(this.mimetype)
+
+		previewImageClass() {
+			let classes = ''
+			if (this.smallPreview) {
+				classes += 'preview-small '
+			} else {
+				classes += 'preview '
 			}
 
-			const previewSize = Math.ceil(this.previewSize * window.devicePixelRatio)
-			return generateUrl('/core/preview?fileId={fileId}&x={width}&y={height}', {
-				fileId: this.id,
-				width: previewSize,
-				height: previewSize,
-			})
+			if (this.failed || this.previewType === PREVIEW_TYPE.MIME_ICON || this.rowLayout) {
+				classes += 'mimeicon'
+			}
+			return classes
 		},
+
+		previewType() {
+			if (this.hasTemporaryImageUrl) {
+				return PREVIEW_TYPE.TEMPORARY
+			}
+
+			if (this.previewAvailable !== 'yes') {
+				return PREVIEW_TYPE.MIME_ICON
+			}
+			const maxGifSize = getCapabilities()?.spreed?.config?.previews?.['max-gif-size'] || 3145728
+			if (this.mimetype === 'image/gif' && this.size <= maxGifSize) {
+				return PREVIEW_TYPE.DIRECT
+			}
+
+			return PREVIEW_TYPE.PREVIEW
+		},
+
+		previewUrl() {
+			const userId = this.$store.getters.getUserId()
+
+			if (this.previewType === PREVIEW_TYPE.TEMPORARY) {
+				return this.localUrl
+			}
+			if (this.previewType === PREVIEW_TYPE.MIME_ICON || this.rowLayout) {
+				return OC.MimeType.getIconUrl(this.mimetype)
+			}
+			// whether to embed/render the file directly
+			if (this.previewType === PREVIEW_TYPE.DIRECT) {
+				// return direct image
+				if (userId === null) {
+					// guest mode, use public link download URL
+					return this.link + '/download/' + encodePath(this.name)
+				} else {
+					// use direct DAV URL
+					return generateRemoteUrl(`dav/files/${userId}`) + encodePath(this.internalAbsolutePath)
+				}
+			}
+
+			// use preview provider URL to render a smaller preview
+			let previewSize = 384
+			if (this.smallPreview) {
+				previewSize = 32
+			}
+			previewSize = Math.ceil(previewSize * window.devicePixelRatio)
+			if (userId === null) {
+				// guest mode: grab token from the link URL
+				// FIXME: use a cleaner way...
+				const token = this.link.slice(this.link.lastIndexOf('/') + 1)
+				return generateUrl('/apps/files_sharing/publicpreview/{token}?x=-1&y={height}&a=1', {
+					token,
+					height: previewSize,
+				})
+			} else {
+				return generateUrl('/core/preview?fileId={fileId}&x=-1&y={height}&a=1', {
+					fileId: this.id,
+					height: previewSize,
+				})
+			}
+		},
+
 		isViewerAvailable() {
 			if (!OCA.Viewer) {
 				return false
@@ -114,13 +367,24 @@ export default {
 
 			const availableHandlers = OCA.Viewer.availableHandlers
 			for (let i = 0; i < availableHandlers.length; i++) {
-				if (availableHandlers[i].mimes.includes(this.mimetype)) {
+				if (availableHandlers[i]?.mimes?.includes(this.mimetype)) {
 					return true
 				}
 			}
 
 			return false
 		},
+
+		isPlayable() {
+			// don't show play button for direct renders
+			if (this.failed || !this.isViewerAvailable || this.previewType !== PREVIEW_TYPE.PREVIEW) {
+				return false
+			}
+
+			// videos only display a preview, so always show a button if playable
+			return this.mimetype === 'image/gif' || this.mimetype.startsWith('video/')
+		},
+
 		internalAbsolutePath() {
 			if (this.path.startsWith('/')) {
 				return this.path
@@ -128,7 +392,34 @@ export default {
 
 			return '/' + this.path
 		},
+
+		isTemporaryUpload() {
+			return this.id.startsWith('temp') && this.index && this.uploadId
+		},
+
+		uploadProgress() {
+			if (this.isTemporaryUpload) {
+				if (this.$store.getters.uploadProgress(this.uploadId, this.index)) {
+					return this.$store.getters.uploadProgress(this.uploadId, this.index)
+				}
+			}
+			// likely never reached
+			return 0
+		},
+
+		hasTemporaryImageUrl() {
+			return this.mimetype.startsWith('image/') && this.localUrl
+		},
+
+		wrapperTabIndex() {
+			return this.isUploadEditor ? '0' : ''
+		},
+
+		removeAriaLabel() {
+			return t('spreed', 'Remove {fileName}', { fileName: this.name })
+		},
 	},
+
 	mounted() {
 		const img = new Image()
 		img.onerror = () => {
@@ -140,8 +431,14 @@ export default {
 		}
 		img.src = this.previewUrl
 	},
+
 	methods: {
-		showPreview(event) {
+		handleClick(event) {
+			if (this.isUploadEditor) {
+				this.$emit('remove-file', this.id)
+				return
+			}
+
 			if (!this.isViewerAvailable) {
 				// Regular event handling by opening the link.
 				return
@@ -169,57 +466,168 @@ export default {
 					},
 				],
 			})
+
+			// FIXME Remove this hack once it is possible to set the parent
+			// element of the viewer.
+			// By default the viewer is a sibling of the fullscreen element, so
+			// it is not visible when in fullscreen mode. It is not possible to
+			// specify the parent nor to know when the viewer was actually
+			// opened, so for the time being it is reparented if needed shortly
+			// after calling it.
+			setTimeout(() => {
+				if (this.$store.getters.isFullscreen()) {
+					document.getElementById('content-vue').appendChild(document.getElementById('viewer'))
+				}
+			}, 1000)
 		},
 	},
 }
 </script>
 
 <style lang="scss" scoped>
+@import '../../../../../assets/variables';
 
-.container {
+.file-preview {
+	position: relative;
+	min-width: 0;
+	width: 100%;
 	/* The file preview can not be a block; otherwise it would fill the whole
 	width of the container and the loading icon would not be centered on the
 	image. */
 	display: inline-block;
 
-	/* Show a hover colour around the preview when navigating with the
-	 * keyboard through the file links (or hovering them with the mouse). */
-	&:hover,
-	&:focus,
-	&:active {
-		.preview {
-			background-color: var(--color-background-hover);
+	border-radius: 16px;
 
-			/* Trick to keep the same position while adding a padding to show
-			 * the background. */
-			box-sizing: content-box !important;
-			padding: 10px;
-			margin: -10px;
+	box-sizing: content-box !important;
+	&:hover,
+	&:focus {
+		background-color: var(--color-background-hover);
+		.remove-file {
+			visibility: visible;
 		}
 	}
 
+	&__image {
+		object-fit: cover;
+	}
+
+	.loading {
+		display: inline-block;
+		width: 100%;
+	}
+
+	.mimeicon {
+		min-height: 128px;
+	}
+
+	.mimeicon.preview-small {
+		min-height: auto;
+		height: 32px;
+	}
+
 	.preview {
-		display: block;
-		width: 128px;
-		height: 128px;
+		display: inline-block;
+		border-radius: var(--border-radius);
+		max-width: 100%;
+		max-height: 384px;
 	}
-	.preview-64 {
-		display: block;
-		width: 64px;
-		height: 64px;
-	}
-
-	strong {
-		/* As the file preview is an inline block the name is set as a block to
-		force it to be on its own line below the preview. */
-		display: block;
+	.preview-small {
+		display: inline-block;
+		border-radius: var(--border-radius);
+		max-width: 100%;
+		max-height: 32px;
 	}
 
-	&:not(.is-viewer-available) {
+	.image-container {
+		display: flex;
+		height: 100%;
+
+		&.playable {
+			.preview {
+				transition: filter 250ms ease-in-out;
+			}
+
+			.play-video-button {
+				position: absolute;
+				height: 48px; /* for proper vertical centering */
+				top: 50%;
+				left: 50%;
+				transform: translate(-50%, -50%);
+				opacity: 0.8;
+				z-index: 1;
+				transition: opacity 250ms ease-in-out;
+			}
+
+			&:hover {
+				.preview {
+					filter: brightness(80%);
+				}
+
+				.play-video-button {
+					opacity: 1;
+				}
+			}
+		}
+	}
+
+	.name-container {
+		font-weight: bold;
+		width: 100%;
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+
+	&:not(.file-preview--viewer-available) {
 		strong:after {
 			content: ' ↗';
 		}
 	}
+	&--upload-editor {
+		max-width: 140px;
+		max-height: 140px;
+		padding: 12px 12px 24px 12px;
+		margin: 10px;
+
+		.preview {
+			margin: auto;
+			width: 128px;
+			height: 128px;
+		}
+		.loading {
+			width: 100%;
+		}
+	}
+
+	&--row-layout {
+		display: flex;
+		align-items: center;
+		height: 36px;
+		border-radius: var(--border-radius);
+		padding: 2px 4px;
+
+		.image-container {
+			height: 100%;
+		}
+
+		.name-container {
+			padding: 0 4px;
+		}
+	}
+
+	&--shared-items-grid {
+		aspect-ratio: 1;
+		.preview {
+			width: 100%;
+		}
+	}
+}
+
+.remove-file {
+	visibility: hidden;
+	position: absolute;
+	top: 8px;
+	right: 8px;
 }
 
 </style>

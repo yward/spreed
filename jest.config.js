@@ -20,9 +20,38 @@
  *
  */
 
+// TODO: find a way to consolidate this in one place, with webpack.common.js
+const ignorePatterns = [
+	'vue-material-design-icons',
+	'@juliushaertl',
+	'tributejs',
+	'@nextcloud/vue',
+	'splitpanes',
+	'string-length',
+	'strip-ansi',
+	'ansi-regex',
+	'char-regex',
+]
+
 module.exports = {
 	preset: '@vue/cli-plugin-unit-jest/presets/no-babel',
 	// Allow tests in the src and in tests/unit folders
 	testMatch: ['<rootDir>/src/**/*.(spec|test).(ts|js)'],
-	setupFilesAfterEnv: ['<rootDir>/src/test-setup.js'],
+	transformIgnorePatterns: [
+		'node_modules/(?!(' + ignorePatterns.join('|') + ')/)',
+	],
+	resetMocks: false,
+	setupFiles: ['jest-localstorage-mock'],
+	setupFilesAfterEnv: [
+		'<rootDir>/src/test-setup.js',
+		'jest-mock-console/dist/setupTestFramework.js',
+	],
+	collectCoverageFrom: [
+		'<rootDir>/src/**/*.{js,vue}',
+	],
+	transform: {
+		// process `*.js` files with `babel-jest`
+		'.*\\.(js)$': 'babel-jest',
+		'src/utils/media/effects/virtual-background/vendor/*': 'jest-transform-stub',
+	},
 }

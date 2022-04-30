@@ -25,32 +25,33 @@ components.
 </docs>
 
 <template>
-	<div class="quote">
+	<a href="#"
+		class="quote"
+		:class="{'quote-own-message': isOwnMessageQuoted}"
+		@click.prevent="handleQuoteClick">
 		<div class="quote__main">
-			<div class="quote__main__author">
-				<h6>{{ getDisplayName }}</h6>
+			<div class="quote__main__author" role="heading" aria-level="4">
+				{{ getDisplayName }}
 			</div>
 			<div v-if="isFileShareMessage"
 				class="quote__main__text">
-				<RichText
-					:text="message"
+				<RichText :text="message"
 					:arguments="richParameters"
 					:autolink="true" />
 			</div>
-			<div v-else
+			<blockquote v-else
 				class="quote__main__text">
 				<p>{{ shortenedQuoteMessage }}</p>
-			</div>
+			</blockquote>
 		</div>
 		<div v-if="isNewMessageFormQuote" class="quote__main__right">
 			<Actions class="quote__main__right__actions">
-				<ActionButton
-					icon="icon-close"
+				<ActionButton icon="icon-close"
 					:close-after-click="true"
 					@click.stop="handleAbortReply" />
 			</Actions>
 		</div>
-	</div>
+	</a>
 </template>
 
 <script>
@@ -59,6 +60,7 @@ import Actions from '@nextcloud/vue/dist/Components/Actions'
 import RichText from '@juliushaertl/vue-richtext'
 import FilePreview from './MessagesList/MessagesGroup/Message/MessagePart/FilePreview'
 import DefaultParameter from './MessagesList/MessagesGroup/Message/MessagePart/DefaultParameter'
+import { EventBus } from '../services/EventBus'
 
 export default {
 	name: 'Quote',
@@ -68,6 +70,10 @@ export default {
 		RichText,
 	},
 	props: {
+		actorId: {
+			type: String,
+			required: true,
+		},
 		/**
 		 * The sender of the message to be replied to.
 		 */
@@ -75,6 +81,9 @@ export default {
 			type: String,
 			required: true,
 		},
+		/**
+		 * The display name of the sender of the message.
+		 */
 		actorDisplayName: {
 			type: String,
 			required: true,
@@ -115,11 +124,19 @@ export default {
 			type: Boolean,
 			default: false,
 		},
+		/**
+		 * The parent message's id
+		 */
+		parentId: {
+			type: Number,
+			required: true,
+		},
 	},
 	computed: {
 		/**
 		 * The message actor display name.
-		 * @returns {string}
+		 *
+		 * @return {string}
 		 */
 		getDisplayName() {
 			const displayName = this.actorDisplayName.trim()
@@ -129,10 +146,15 @@ export default {
 			}
 
 			if (displayName === '') {
-				return t('spreed', '[Unknown username]')
+				return t('spreed', 'Deleted user')
 			}
 
 			return displayName
+		},
+
+		isOwnMessageQuoted() {
+			return this.actorId === this.$store.getters.getActorId()
+				&& this.actorType === this.$store.getters.getActorType()
 		},
 
 		isFileShareMessage() {
@@ -148,7 +170,7 @@ export default {
 					richParameters[p] = {
 						component: FilePreview,
 						props: Object.assign({
-							previewSize: 64,
+							smallPreview: true,
 						}, this.messageParameters[p]
 						),
 					}
@@ -166,7 +188,8 @@ export default {
 		 * This is a simplified version of the last chat message.
 		 * Parameters are parsed without markup (just replaced with the name),
 		 * e.g. no avatars on mentions.
-		 * @returns {string} A simple message to show below the conversation name
+		 *
+		 * @return {string} A simple message to show below the conversation name
 		 */
 		simpleQuotedMessage() {
 			if (!Object.keys(this.messageParameters).length) {
@@ -178,7 +201,7 @@ export default {
 
 			// We don't really use rich objects in the subtitle, instead we fall back to the name of the item
 			Object.keys(params).forEach((parameterKey) => {
-				subtitle = subtitle.replace('{' + parameterKey + '}', params[parameterKey].name)
+				subtitle = subtitle.replaceAll('{' + parameterKey + '}', params[parameterKey].name)
 			})
 
 			return subtitle
@@ -193,7 +216,6 @@ export default {
 				return this.simpleQuotedMessage
 			}
 		},
-
 	},
 	methods: {
 		/**
@@ -202,6 +224,10 @@ export default {
 		 */
 		handleAbortReply() {
 			this.$store.dispatch('removeMessageToBeReplied', this.token)
+		},
+
+		handleQuoteClick() {
+			EventBus.$emit('focus-message', this.parentId)
 		},
 	},
 }
@@ -212,11 +238,16 @@ export default {
 @import '../assets/variables';
 
 .quote {
-	border-left: 4px solid var(--color-primary);
+	border-left: 4px solid var(--color-border-dark);
 	margin: 4px 0 4px 8px;
 	padding-left: 8px;
 	display: flex;
 	max-width: $messages-list-max-width - $message-utils-width;
+
+	&.quote-own-message {
+		border-left: 4px solid var(--color-primary);
+	}
+
 	&__main {
 		display: flex;
 		flex-direction: column;

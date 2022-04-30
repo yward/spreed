@@ -20,40 +20,75 @@
 -->
 
 <template>
-	<button v-if="showStartCallButton"
-		v-tooltip="{
-			placement: 'auto',
-			trigger: 'hover',
-			content: startCallToolTip,
-			autoHide: false,
-			html: true
-		}"
-		:disabled="startCallButtonDisabled || loading || blockCalls"
-		class="top-bar__button"
-		:class="startCallButtonClasses"
-		@click="joinCall">
-		<span
-			class="icon"
-			:class="startCallIcon" />
-		{{ startCallLabel }}
-	</button>
-	<button v-else-if="showLeaveCallButton"
-		class="top-bar__button error"
-		:disabled="loading"
-		@click="leaveCall">
-		<span
-			class="icon"
-			:class="leaveCallIcon" />
-		{{ leaveCallLabel }}
-	</button>
+	<div>
+		<Button v-if="showStartCallButton"
+			id="call_button"
+			v-tooltip="{
+				placement: 'auto',
+				trigger: 'hover',
+				content: startCallToolTip,
+				autoHide: false,
+				html: true
+			}"
+			:disabled="startCallButtonDisabled || loading || blockCalls"
+			:type="startCallButtonType"
+			@click="handleClick">
+			<template #icon>
+				<span class="icon"
+					:class="startCallIcon" />
+			</template>
+			{{ startCallLabel }}
+		</Button>
+		<Button v-else-if="showLeaveCallButton && !canEndForAll"
+			id="call_button"
+			type="error"
+			:disabled="loading"
+			@click="leaveCall(false)">
+			<template #icon>
+				<span class="icon"
+					:class="leaveCallIcon" />
+			</template>
+			{{ leaveCallLabel }}
+		</Button>
+		<Actions v-else-if="showLeaveCallButton && canEndForAll"
+			:disabled="loading">
+			<template slot="icon">
+				<VideoOff :size="16"
+					decorative />
+				<span class="label">{{ leaveCallLabel }}</span>
+				<MenuDown :size="16"
+					decorative />
+			</template>
+			<ActionButton @click="leaveCall(false)">
+				<VideoOff slot="icon"
+					:size="20"
+					decorative />
+				{{ leaveCallLabel }}
+			</ActionButton>
+			<ActionButton @click="leaveCall(true)">
+				<VideoOff slot="icon"
+					:size="20"
+					decorative />
+				{{ t('spreed', 'End meeting for all') }}
+			</ActionButton>
+		</Actions>
+	</div>
 </template>
 
 <script>
-import { CONVERSATION, PARTICIPANT, WEBINAR } from '../../constants'
+import { CONVERSATION, PARTICIPANT } from '../../constants'
 import browserCheck from '../../mixins/browserCheck'
+import isInCall from '../../mixins/isInCall'
+import isInLobby from '../../mixins/isInLobby'
+import participant from '../../mixins/participant'
 import Tooltip from '@nextcloud/vue/dist/Directives/Tooltip'
 import { emit } from '@nextcloud/event-bus'
-
+import BrowserStorage from '../../services/BrowserStorage'
+import Actions from '@nextcloud/vue/dist/Components/Actions'
+import ActionButton from '@nextcloud/vue/dist/Components/ActionButton'
+import VideoOff from 'vue-material-design-icons/VideoOff'
+import MenuDown from 'vue-material-design-icons/MenuDown'
+import Button from '@nextcloud/vue/dist/Components/Button'
 export default {
 	name: 'CallButton',
 
@@ -61,7 +96,31 @@ export default {
 		Tooltip,
 	},
 
-	mixins: [browserCheck],
+	components: {
+		Actions,
+		ActionButton,
+		VideoOff,
+		MenuDown,
+		Button,
+	},
+
+	mixins: [
+		browserCheck,
+		isInCall,
+		isInLobby,
+		participant,
+	],
+
+	props: {
+		/**
+		 * Skips the device checker dialog and joins or starts the call
+		 * upon clicking the button
+		 */
+		forceJoinCall: {
+			type: Boolean,
+			default: false,
+		},
+	},
 
 	data() {
 		return {
@@ -78,42 +137,34 @@ export default {
 		},
 
 		conversation() {
-			if (this.$store.getters.conversation(this.token)) {
-				return this.$store.getters.conversation(this.token)
-			}
-			return {
-				participantFlags: PARTICIPANT.CALL_FLAG.DISCONNECTED,
-				participantType: PARTICIPANT.TYPE.USER,
-				readOnly: CONVERSATION.STATE.READ_ONLY,
-				hasCall: false,
-				canStartCall: false,
-				lobbyState: WEBINAR.LOBBY.NONE,
-			}
+			return this.$store.getters.conversation(this.token) || this.$store.getters.dummyConversation
 		},
 
-		participant() {
-			const participantIndex = this.$store.getters.getParticipantIndex(this.token, this.$store.getters.getParticipantIdentifier())
-			if (participantIndex !== -1) {
-				console.debug('Current participant found')
-				return this.$store.getters.getParticipant(this.token, participantIndex)
-			}
-
-			console.debug('Current participant not found')
-			return {
-				inCall: PARTICIPANT.CALL_FLAG.DISCONNECTED,
-			}
+		participantType() {
+			return this.conversation.participantType
 		},
 
-		isBlockedByLobby() {
-			return this.conversation.lobbyState === WEBINAR.LOBBY.NON_MODERATORS
-				&& !this.isParticipantTypeModerator(this.conversation.participantType)
+		canEndForAll() {
+			return ((this.conversation.callPermissions !== PARTICIPANT.PERMISSIONS.DEFAULT
+					&& (this.conversation.callPermissions & PARTICIPANT.PERMISSIONS.CALL_START) === 0)
+				|| (this.conversation.defaultPermissions !== PARTICIPANT.PERMISSIONS.DEFAULT
+					&& (this.conversation.defaultPermissions & PARTICIPANT.PERMISSIONS.CALL_START) === 0))
+			 && (this.participantType === PARTICIPANT.TYPE.OWNER
+				|| this.participantType === PARTICIPANT.TYPE.MODERATOR
+				|| this.participantType === PARTICIPANT.TYPE.GUEST_MODERATOR)
+		},
+
+		hasCall() {
+			return this.conversation.hasCall || this.conversation.hasCallOverwrittenByChat
 		},
 
 		startCallButtonDisabled() {
 			return (!this.conversation.canStartCall
-					&& !this.conversation.hasCall)
-				|| this.isBlockedByLobby
+					&& !this.hasCall)
+				|| this.isInLobby
+				|| this.conversation.readOnly
 				|| this.isNextcloudTalkHashDirty
+				|| !this.currentConversationIsJoined
 		},
 
 		leaveCallLabel() {
@@ -129,7 +180,7 @@ export default {
 		},
 
 		startCallLabel() {
-			if (this.conversation.hasCall && !this.isBlockedByLobby) {
+			if (this.hasCall && !this.isInLobby) {
 				return t('spreed', 'Join call')
 			}
 
@@ -145,7 +196,7 @@ export default {
 				return this.callButtonTooltipText
 			}
 
-			if (!this.conversation.canStartCall && !this.conversation.hasCall) {
+			if (!this.conversation.canStartCall && !this.hasCall) {
 				return t('spreed', 'You will be able to join the call only after a moderator starts it.')
 			}
 
@@ -157,28 +208,36 @@ export default {
 				return 'icon-loading-small'
 			}
 
-			if (this.conversation.hasCall && !this.isBlockedByLobby) {
+			if (this.hasCall && !this.isInLobby) {
 				return 'icon-incoming-call'
 			}
 
 			return 'icon-start-call'
 		},
 
-		startCallButtonClasses() {
-			return {
-				primary: !this.conversation.hasCall && !this.isBlockedByLobby,
-				success: this.conversation.hasCall && !this.isBlockedByLobby,
+		startCallButtonType() {
+			if (!this.isInLobby) {
+				if (!this.hasCall) {
+					return 'primary'
+				} else {
+					return 'success'
+				}
 			}
+			return ''
 		},
 
 		showStartCallButton() {
 			return this.conversation.readOnly === CONVERSATION.STATE.READ_WRITE
-				&& this.participant.inCall === PARTICIPANT.CALL_FLAG.DISCONNECTED
+				&& !this.isInCall
 		},
 
 		showLeaveCallButton() {
 			return this.conversation.readOnly === CONVERSATION.STATE.READ_WRITE
-				&& this.participant.inCall !== PARTICIPANT.CALL_FLAG.DISCONNECTED
+				&& this.isInCall
+		},
+
+		currentConversationIsJoined() {
+			return this.$store.getters.currentConversationIsJoined
 		},
 	},
 
@@ -188,6 +247,14 @@ export default {
 		},
 
 		async joinCall() {
+			let flags = PARTICIPANT.CALL_FLAG.IN_CALL
+			if (this.conversation.permissions & PARTICIPANT.PERMISSIONS.PUBLISH_AUDIO) {
+				flags |= PARTICIPANT.CALL_FLAG.WITH_AUDIO
+			}
+			if (this.conversation.permissions & PARTICIPANT.PERMISSIONS.PUBLISH_VIDEO) {
+				flags |= PARTICIPANT.CALL_FLAG.WITH_VIDEO
+			}
+
 			console.info('Joining call')
 			this.loading = true
 			// Close navigation
@@ -197,42 +264,50 @@ export default {
 			await this.$store.dispatch('joinCall', {
 				token: this.token,
 				participantIdentifier: this.$store.getters.getParticipantIdentifier(),
-				flags: PARTICIPANT.CALL_FLAG.IN_CALL, // FIXME add audio+video as per setting
+				flags,
 			})
 			this.loading = false
 		},
 
-		async leaveCall() {
-			console.info('Leaving call')
+		async leaveCall(endMeetingForAll = false) {
+			if (endMeetingForAll) {
+				console.info('End meeting for everyone')
+			} else {
+				console.info('Leaving call')
+			}
+
 			// Remove selected participant
 			this.$store.dispatch('selectedVideoPeerId', null)
 			this.loading = true
-			// Open navigarion
+
+			// Open navigation
 			emit('toggle-navigation', {
 				open: true,
 			})
 			await this.$store.dispatch('leaveCall', {
 				token: this.token,
 				participantIdentifier: this.$store.getters.getParticipantIdentifier(),
+				all: endMeetingForAll,
 			})
 			this.loading = false
-			// Go back to promoted view upon leaving a call
-			this.$store.dispatch('isGrid', false)
+		},
+
+		handleClick() {
+			const shouldShowDeviceCheckerScreen = (BrowserStorage.getItem('showDeviceChecker' + this.token) === null
+				|| BrowserStorage.getItem('showDeviceChecker' + this.token) === 'true') && !this.forceJoinCall
+			console.debug(shouldShowDeviceCheckerScreen)
+			if (shouldShowDeviceCheckerScreen) {
+				emit('talk:device-checker:show')
+			} else {
+				emit('talk:device-checker:hide')
+				this.joinCall()
+			}
 		},
 	},
 }
 </script>
 
 <style lang="scss" scoped>
-.top-bar__button .icon {
-	opacity: 1;
-	margin-right: 4px;
-
-	&.icon-incoming-call {
-		animation: pulse 2s infinite;
-	}
-}
-
 .success {
 	color: white;
 	background-color: var(--color-success);
@@ -245,15 +320,25 @@ export default {
 	}
 }
 
-@keyframes pulse {
-	0% {
-		opacity: .5;
-	}
-	50% {
+#call_button {
+	margin: 0 auto;
+}
+
+/* HACK: to override the default action button styles to make it look like a regular button */
+::v-deep .trigger > button {
+	&,
+	&:hover,
+	&:focus,
+	&:active {
+		color: white;
+		background-color: var(--color-error) !important;
+		border: 1px solid var(--color-error) !important;
+		padding: 0 16px;
 		opacity: 1;
 	}
-	100% {
-		opacity: .5;
+
+	& > .label {
+		margin: 0 8px;
 	}
 }
 </style>

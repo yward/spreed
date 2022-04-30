@@ -2,7 +2,7 @@
  *
  * @copyright Copyright (c) 2019, Daniel Calviño Sánchez (danxuliu@gmail.com)
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -40,19 +40,26 @@
 	* to the user even if the browser window is not in the foreground (provided
 	* the user granted the permissions to receive notifications from the site).
 	*
-	* @param {LocalMediaModel} model the model that emits "speakingWhileMuted"
-	*        events
-	* @param {View} view the view that provides the
-	*        "setSpeakingWhileMutedNotification" method
+	* @param {object} LocalMediaModel the model that emits "speakingWhileMuted"
+	* events.
+	* @param {object} view the view that provides the
+	* "setSpeakingWhileMutedNotification" method.
 	*/
-export default function SpeakingWhileMutedWarner(model, view) {
-	model.on('change:speakingWhileMuted', this._handleSpeakingWhileMutedChange.bind(this))
-
+export default function SpeakingWhileMutedWarner(LocalMediaModel, view) {
+	this._model = LocalMediaModel
 	this._view = view
+
+	this._handleSpeakingWhileMutedChangeBound = this._handleSpeakingWhileMutedChange.bind(this)
+
+	this._model.on('change:speakingWhileMuted', this._handleSpeakingWhileMutedChangeBound)
 }
 SpeakingWhileMutedWarner.prototype = {
 
-	_handleSpeakingWhileMutedChange: function(model, speakingWhileMuted) {
+	destroy() {
+		this._model.off('change:speakingWhileMuted', this._handleSpeakingWhileMutedChangeBound)
+	},
+
+	_handleSpeakingWhileMutedChange(model, speakingWhileMuted) {
 		if (speakingWhileMuted) {
 			this._handleSpeakingWhileMuted()
 		} else {
@@ -60,7 +67,7 @@ SpeakingWhileMutedWarner.prototype = {
 		}
 	},
 
-	_handleSpeakingWhileMuted: function() {
+	_handleSpeakingWhileMuted() {
 		this._startedSpeakingTimeout = setTimeout(function() {
 			delete this._startedSpeakingTimeout
 
@@ -68,7 +75,7 @@ SpeakingWhileMutedWarner.prototype = {
 		}.bind(this), 3000)
 	},
 
-	_handleStoppedSpeakingWhileMuted: function() {
+	_handleStoppedSpeakingWhileMuted() {
 		if (this._startedSpeakingTimeout) {
 			clearTimeout(this._startedSpeakingTimeout)
 			delete this._startedSpeakingTimeout
@@ -77,7 +84,7 @@ SpeakingWhileMutedWarner.prototype = {
 		this._hideWarning()
 	},
 
-	_showWarning: function() {
+	_showWarning() {
 		const message = t('spreed', 'You seem to be talking while muted, please unmute yourself for others to hear you')
 
 		if (!document.hidden) {
@@ -95,7 +102,7 @@ SpeakingWhileMutedWarner.prototype = {
 		}
 	},
 
-	_showNotification: function(message) {
+	_showNotification(message) {
 		if (this._notification) {
 			return
 		}
@@ -104,7 +111,7 @@ SpeakingWhileMutedWarner.prototype = {
 		this._notification = true
 	},
 
-	_showBrowserNotification: function(message) {
+	_showBrowserNotification(message) {
 		return new Promise(function(resolve, reject) {
 			if (this._browserNotification) {
 				resolve()
@@ -147,7 +154,7 @@ SpeakingWhileMutedWarner.prototype = {
 		}.bind(this))
 	},
 
-	_hideWarning: function() {
+	_hideWarning() {
 		this._pendingBrowserNotification = false
 
 		if (this._notification) {

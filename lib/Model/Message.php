@@ -23,6 +23,7 @@ declare(strict_types=1);
 
 namespace OCA\Talk\Model;
 
+use OCA\Talk\Chat\ChatManager;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCP\Comments\IComment;
@@ -156,13 +157,20 @@ class Message {
 	 * Specifies whether a message can be replied to
 	 */
 	public function isReplyable(): bool {
-		return $this->getMessageType() !== 'system' &&
-			$this->getMessageType() !== 'command' &&
-			\in_array($this->getActorType(), ['users', 'guests']);
+		if ($this->getRoom()->getReadOnly() === Room::READ_ONLY) {
+			return false;
+		}
+
+		return $this->getMessageType() !== ChatManager::VERB_SYSTEM &&
+			$this->getMessageType() !== ChatManager::VERB_COMMAND &&
+			$this->getMessageType() !== ChatManager::VERB_MESSAGE_DELETED &&
+			$this->getMessageType() !== ChatManager::VERB_REACTION &&
+			$this->getMessageType() !== ChatManager::VERB_REACTION_DELETED &&
+			\in_array($this->getActorType(), [Attendee::ACTOR_USERS, Attendee::ACTOR_GUESTS]);
 	}
 
 	public function toArray(): array {
-		return [
+		$data = [
 			'id' => (int) $this->getComment()->getId(),
 			'token' => $this->getRoom()->getToken(),
 			'actorType' => $this->getActorType(),
@@ -171,10 +179,17 @@ class Message {
 			'timestamp' => $this->getComment()->getCreationDateTime()->getTimestamp(),
 			'message' => $this->getMessage(),
 			'messageParameters' => $this->getMessageParameters(),
-			'systemMessage' => $this->getMessageType() === 'system' ? $this->getMessageRaw() : '',
+			'systemMessage' => $this->getMessageType() === ChatManager::VERB_SYSTEM ? $this->getMessageRaw() : '',
 			'messageType' => $this->getMessageType(),
 			'isReplyable' => $this->isReplyable(),
 			'referenceId' => (string) $this->getComment()->getReferenceId(),
+			'reactions' => $this->getComment()->getReactions(),
 		];
+
+		if ($this->getMessageType() === ChatManager::VERB_MESSAGE_DELETED) {
+			$data['deleted'] = true;
+		}
+
+		return $data;
 	}
 }

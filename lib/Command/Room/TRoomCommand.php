@@ -26,14 +26,53 @@ declare(strict_types=1);
 namespace OCA\Talk\Command\Room;
 
 use InvalidArgumentException;
-use OCA\Circles\Api\v1\Circles;
-use OCA\Circles\Model\Member;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
+use OCA\Talk\Exceptions\RoomNotFoundException;
+use OCA\Talk\Manager;
+use OCA\Talk\MatterbridgeManager;
+use OCA\Talk\Model\Attendee;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
+use OCA\Talk\Service\RoomService;
+use OCP\IGroup;
+use OCP\IGroupManager;
 use OCP\IUser;
+use OCP\IUserManager;
+use Stecman\Component\Symfony\Console\BashCompletion\CompletionContext;
+use Symfony\Component\Console\Input\ArgvInput;
+use Symfony\Component\Console\Input\InputDefinition;
 
 trait TRoomCommand {
+	/** @var Manager */
+	protected $manager;
+
+	/** @var RoomService */
+	protected $roomService;
+
+	/** @var ParticipantService */
+	protected $participantService;
+
+	/** @var IUserManager */
+	protected $userManager;
+
+	/** @var IGroupManager */
+	protected $groupManager;
+
+	public function __construct(Manager $manager,
+								RoomService $roomService,
+								ParticipantService $participantService,
+								IUserManager $userManager,
+								IGroupManager $groupManager) {
+		parent::__construct();
+
+		$this->manager = $manager;
+		$this->roomService = $roomService;
+		$this->participantService = $participantService;
+		$this->userManager = $userManager;
+		$this->groupManager = $groupManager;
+	}
+
 	/**
 	 * @param Room   $room
 	 * @param string $name
@@ -68,21 +107,31 @@ trait TRoomCommand {
 	}
 
 	/**
+	 * @param Room   $room
+	 * @param string $description
+	 *
+	 * @throws InvalidArgumentException
+	 */
+	protected function setRoomDescription(Room $room, string $description): void {
+		try {
+			$room->setDescription($description);
+		} catch (\LengthException $e) {
+			throw new InvalidArgumentException('Invalid room description.');
+		}
+	}
+
+	/**
 	 * @param Room $room
 	 * @param bool $public
 	 *
 	 * @throws InvalidArgumentException
 	 */
 	protected function setRoomPublic(Room $room, bool $public): void {
-		if ($public === ($room->getType() === Room::PUBLIC_CALL)) {
+		if ($public === ($room->getType() === Room::TYPE_PUBLIC)) {
 			return;
 		}
 
-		if (!$public && $room->hasPassword()) {
-			throw new InvalidArgumentException('Unable to change password protected public room to private room.');
-		}
-
-		if (!$room->setType($public ? Room::PUBLIC_CALL : Room::GROUP_CALL)) {
+		if (!$room->setType($public ? Room::TYPE_PUBLIC : Room::TYPE_GROUP)) {
 			throw new InvalidArgumentException('Unable to change room type.');
 		}
 	}
@@ -104,6 +153,22 @@ trait TRoomCommand {
 	}
 
 	/**
+	 * @param Room $room
+	 * @param int $listable
+	 *
+	 * @throws InvalidArgumentException
+	 */
+	protected function setRoomListable(Room $room, int $listable): void {
+		if ($room->getListable() === $listable) {
+			return;
+		}
+
+		if (!$room->setListable($listable)) {
+			throw new InvalidArgumentException('Unable to change room state.');
+		}
+	}
+
+	/**
 	 * @param Room   $room
 	 * @param string $password
 	 *
@@ -114,7 +179,7 @@ trait TRoomCommand {
 			return;
 		}
 
-		if (($password !== '') && ($room->getType() !== Room::PUBLIC_CALL)) {
+		if (($password !== '') && ($room->getType() !== Room::TYPE_PUBLIC)) {
 			throw new InvalidArgumentException('Unable to add password protection to private room.');
 		}
 
@@ -131,12 +196,18 @@ trait TRoomCommand {
 	 */
 	protected function setRoomOwner(Room $room, string $userId): void {
 		try {
-			$participant = $room->getParticipant($userId);
+			$participant = $room->getParticipant($userId, false);
 		} catch (ParticipantNotFoundException $e) {
 			throw new InvalidArgumentException(sprintf("User '%s' is no participant.", $userId));
 		}
 
-		$room->setParticipantType($participant, Participant::OWNER);
+		if ($userId === MatterbridgeManager::BRIDGE_BOT_USERID) {
+			throw new InvalidArgumentException('Can not promote the bridge-bot user.');
+		}
+
+		$this->unsetRoomOwner($room);
+
+		$this->participantService->updateParticipantType($room, $participant, Participant::OWNER);
 	}
 
 	/**
@@ -145,9 +216,10 @@ trait TRoomCommand {
 	 * @throws InvalidArgumentException
 	 */
 	protected function unsetRoomOwner(Room $room): void {
-		foreach ($room->getParticipants() as $participant) {
-			if ($participant->getParticipantType() === Participant::OWNER) {
-				$room->setParticipantType($participant, Participant::USER);
+		$participants = $this->participantService->getParticipantsForRoom($room);
+		foreach ($participants as $participant) {
+			if ($participant->getAttendee()->getParticipantType() === Participant::OWNER) {
+				$this->participantService->updateParticipantType($room, $participant, Participant::USER);
 			}
 		}
 	}
@@ -163,60 +235,14 @@ trait TRoomCommand {
 			return;
 		}
 
-		$groupManager = \OC::$server->getGroupManager();
-
-		$users = [];
 		foreach ($groupIds as $groupId) {
-			$group = $groupManager->get($groupId);
+			$group = $this->groupManager->get($groupId);
 			if ($group === null) {
 				throw new InvalidArgumentException(sprintf("Group '%s' not found.", $groupId));
 			}
 
-			$groupUsers = array_map(function (IUser $user) {
-				return $user->getUID();
-			}, $group->getUsers());
-
-			$users = array_merge($users, array_values($groupUsers));
+			$this->participantService->addGroup($room, $group);
 		}
-
-		$this->addRoomParticipants($room, $users);
-	}
-
-	/**
-	 * @param Room     $room
-	 * @param string[] $circleIds
-	 *
-	 * @throws InvalidArgumentException
-	 */
-	protected function addRoomParticipantsByCircle(Room $room, array $circleIds): void {
-		if (!$circleIds) {
-			return;
-		}
-
-		if (!\OC::$server->getAppManager()->isEnabledForUser('circles')) {
-			throw new InvalidArgumentException("App 'circles' is not enabled.");
-		}
-
-		$users = [];
-		foreach ($circleIds as $circleId) {
-			try {
-				$circle = Circles::detailsCircle($circleId);
-			} catch (\Exception $e) {
-				throw new InvalidArgumentException(sprintf("Circle '%s' not found.", $circleId));
-			}
-
-			$circleUsers = array_filter($circle->getMembers(), function (Member $member) {
-				if (($member->getType() !== Member::TYPE_USER) || ($member->getUserId() === '')) {
-					return false;
-				}
-
-				return in_array($member->getStatus(), [Member::STATUS_INVITED, Member::STATUS_MEMBER], true);
-			});
-
-			$users = array_merge($users, $circleUsers);
-		}
-
-		$this->addRoomParticipants($room, $users);
 	}
 
 	/**
@@ -230,11 +256,13 @@ trait TRoomCommand {
 			return;
 		}
 
-		$userManager = \OC::$server->getUserManager();
-
 		$participants = [];
 		foreach ($userIds as $userId) {
-			$user = $userManager->get($userId);
+			if ($userId === MatterbridgeManager::BRIDGE_BOT_USERID) {
+				throw new InvalidArgumentException('Can not add the bridge-bot user.');
+			}
+
+			$user = $this->userManager->get($userId);
 			if ($user === null) {
 				throw new InvalidArgumentException(sprintf("User '%s' not found.", $userId));
 			}
@@ -245,7 +273,7 @@ trait TRoomCommand {
 			}
 
 			try {
-				$room->getParticipant($user->getUID());
+				$room->getParticipant($user->getUID(), false);
 
 				// nothing to do, user is a participant already
 				continue;
@@ -253,12 +281,14 @@ trait TRoomCommand {
 				// we expect the user not to be a participant yet
 			}
 
-			$participants[$user->getUID()] = [
-				'userId' => $user->getUID(),
+			$participants[] = [
+				'actorType' => Attendee::ACTOR_USERS,
+				'actorId' => $user->getUID(),
+				'displayName' => $user->getDisplayName(),
 			];
 		}
 
-		\call_user_func_array([$room, 'addUsers'], $participants);
+		$this->participantService->addUsers($room, $participants);
 	}
 
 	/**
@@ -268,21 +298,19 @@ trait TRoomCommand {
 	 * @throws InvalidArgumentException
 	 */
 	protected function removeRoomParticipants(Room $room, array $userIds): void {
-		$userManager = \OC::$server->getUserManager();
-
 		$users = [];
 		foreach ($userIds as $userId) {
 			try {
-				$room->getParticipant($userId);
+				$room->getParticipant($userId, false);
 			} catch (ParticipantNotFoundException $e) {
 				throw new InvalidArgumentException(sprintf("User '%s' is no participant.", $userId));
 			}
 
-			$users[] = $userManager->get($userId);
+			$users[] = $this->userManager->get($userId);
 		}
 
 		foreach ($users as $user) {
-			$room->removeUser($user, Room::PARTICIPANT_REMOVED);
+			$this->participantService->removeUser($room, $user, Room::PARTICIPANT_REMOVED);
 		}
 	}
 
@@ -295,19 +323,23 @@ trait TRoomCommand {
 	protected function addRoomModerators(Room $room, array $userIds): void {
 		$participants = [];
 		foreach ($userIds as $userId) {
+			if ($userId === MatterbridgeManager::BRIDGE_BOT_USERID) {
+				throw new InvalidArgumentException('Can not promote the bridge-bot user.');
+			}
+
 			try {
-				$participant = $room->getParticipant($userId);
+				$participant = $room->getParticipant($userId, false);
 			} catch (ParticipantNotFoundException $e) {
 				throw new InvalidArgumentException(sprintf("User '%s' is no participant.", $userId));
 			}
 
-			if ($participant->getParticipantType() !== Participant::OWNER) {
+			if ($participant->getAttendee()->getParticipantType() !== Participant::OWNER) {
 				$participants[] = $participant;
 			}
 		}
 
 		foreach ($participants as $participant) {
-			$room->setParticipantType($participant, Participant::MODERATOR);
+			$this->participantService->updateParticipantType($room, $participant, Participant::MODERATOR);
 		}
 	}
 
@@ -321,18 +353,70 @@ trait TRoomCommand {
 		$participants = [];
 		foreach ($userIds as $userId) {
 			try {
-				$participant = $room->getParticipant($userId);
+				$participant = $room->getParticipant($userId, false);
 			} catch (ParticipantNotFoundException $e) {
 				throw new InvalidArgumentException(sprintf("User '%s' is no participant.", $userId));
 			}
 
-			if ($participant->getParticipantType() === Participant::MODERATOR) {
+			if ($participant->getAttendee()->getParticipantType() === Participant::MODERATOR) {
 				$participants[] = $participant;
 			}
 		}
 
 		foreach ($participants as $participant) {
-			$room->setParticipantType($participant, Participant::USER);
+			$this->participantService->updateParticipantType($room, $participant, Participant::USER);
 		}
+	}
+
+	protected function completeTokenValues(CompletionContext $context): array {
+		return array_map(function (Room $room) {
+			return $room->getToken();
+		}, $this->manager->searchRoomsByToken($context->getCurrentWord()));
+	}
+
+	protected function completeUserValues(CompletionContext $context): array {
+		return array_map(function (IUser $user) {
+			if ($user->getUID() === MatterbridgeManager::BRIDGE_BOT_USERID) {
+				return '';
+			}
+			return $user->getUID();
+		}, $this->userManager->search($context->getCurrentWord()));
+	}
+
+	protected function completeGroupValues(CompletionContext $context): array {
+		return array_map(function (IGroup $group) {
+			return $group->getGID();
+		}, $this->groupManager->search($context->getCurrentWord()));
+	}
+
+	protected function completeParticipantValues(CompletionContext $context): array {
+		$definition = new InputDefinition();
+
+		if ($this->getApplication() !== null) {
+			$definition->addArguments($this->getApplication()->getDefinition()->getArguments());
+			$definition->addOptions($this->getApplication()->getDefinition()->getOptions());
+		}
+
+		$definition->addArguments($this->getDefinition()->getArguments());
+		$definition->addOptions($this->getDefinition()->getOptions());
+
+		$input = new ArgvInput($context->getWords(), $definition);
+		if ($input->hasArgument('token')) {
+			$token = $input->getArgument('token');
+		} elseif ($input->hasOption('token')) {
+			$token = $input->getOption('token');
+		} else {
+			return [];
+		}
+
+		try {
+			$room = $this->manager->getRoomByToken($token);
+		} catch (RoomNotFoundException $e) {
+			return [];
+		}
+
+		return array_filter($this->participantService->getParticipantUserIds($room), static function ($userId) use ($context) {
+			return stripos($userId, $context->getCurrentWord()) !== false;
+		});
 	}
 }

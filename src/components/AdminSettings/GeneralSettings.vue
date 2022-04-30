@@ -34,7 +34,7 @@
 				:placeholder="t('spreed', 'Default group notification for new groups')"
 				label="label"
 				track-by="value"
-				:disabled="loading || loadingStartCalls"
+				:disabled="loading || loadingDefaultGroupNotification"
 				@input="saveDefaultGroupNotification" />
 		</p>
 
@@ -84,6 +84,7 @@ export default {
 		return {
 			loading: true,
 			loadingConversationsFiles: false,
+			loadingDefaultGroupNotification: false,
 
 			defaultGroupNotificationOptions,
 			defaultGroupNotification: defaultGroupNotificationOptions[1],
@@ -95,19 +96,19 @@ export default {
 
 	mounted() {
 		this.loading = true
-		this.conversationsFiles = parseInt(loadState('talk', 'conversations_files')) === 1
-		this.defaultGroupNotification = defaultGroupNotificationOptions[parseInt(loadState('talk', 'default_group_notification')) - 1]
-		this.conversationsFilesPublicShares = parseInt(loadState('talk', 'conversations_files_public_shares')) === 1
+		this.conversationsFiles = parseInt(loadState('spreed', 'conversations_files')) === 1
+		this.defaultGroupNotification = defaultGroupNotificationOptions[parseInt(loadState('spreed', 'default_group_notification')) - 1]
+		this.conversationsFilesPublicShares = parseInt(loadState('spreed', 'conversations_files_public_shares')) === 1
 		this.loading = false
 	},
 
 	methods: {
 		saveDefaultGroupNotification() {
-			this.loadingStartCalls = true
+			this.loadingDefaultGroupNotification = true
 
 			OCP.AppConfig.setValue('spreed', 'default_group_notification', this.defaultGroupNotification.value, {
 				success: function() {
-					this.loadingStartCalls = false
+					this.loadingDefaultGroupNotification = false
 				}.bind(this),
 			})
 		},

@@ -32,15 +32,11 @@ use OCP\Migration\SimpleMigrationStep;
 use OCP\Migration\IOutput;
 
 class Version2000Date20171026140256 extends SimpleMigrationStep {
+	protected IDBConnection $connection;
 
-	/** @var IDBConnection */
-	protected $connection;
+	protected IConfig $config;
 
-	/** @var IConfig */
-	protected $config;
-
-	/** @var IGroupManager */
-	protected $groupManager;
+	protected IGroupManager $groupManager;
 
 	public function __construct(IDBConnection $connection,
 								IConfig $config,
@@ -70,7 +66,7 @@ class Version2000Date20171026140256 extends SimpleMigrationStep {
 		$query = $this->connection->getQueryBuilder();
 		$query->select('*')
 			->from('spreedme_rooms');
-		$result = $query->execute();
+		$result = $query->executeQuery();
 
 		$output->startProgress();
 		while ($row = $result->fetch()) {
@@ -81,7 +77,7 @@ class Version2000Date20171026140256 extends SimpleMigrationStep {
 			}
 
 			$update->setParameter('room_id', (int) $row['id'], IQueryBuilder::PARAM_INT)
-				->execute();
+				->executeStatement();
 		}
 		$output->finishProgress();
 	}

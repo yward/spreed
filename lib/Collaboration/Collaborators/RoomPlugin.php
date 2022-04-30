@@ -25,6 +25,8 @@ declare(strict_types=1);
 namespace OCA\Talk\Collaboration\Collaborators;
 
 use OCA\Talk\Manager;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCP\Collaboration\Collaborators\ISearchPlugin;
 use OCP\Collaboration\Collaborators\ISearchResult;
@@ -33,12 +35,9 @@ use OCP\IUserSession;
 use OCP\Share\IShare;
 
 class RoomPlugin implements ISearchPlugin {
+	private Manager $manager;
 
-	/** @var Manager */
-	private $manager;
-
-	/** @var IUserSession */
-	private $userSession;
+	private IUserSession $userSession;
 
 	public function __construct(Manager $manager,
 								IUserSession $userSession) {
@@ -58,10 +57,16 @@ class RoomPlugin implements ISearchPlugin {
 
 		$result = ['wide' => [], 'exact' => []];
 
-		$rooms = $this->manager->getRoomsForParticipant($userId);
+		$rooms = $this->manager->getRoomsForUser($userId);
 		foreach ($rooms as $room) {
 			if ($room->getReadOnly() === Room::READ_ONLY) {
 				// Can not add new shares to read-only rooms
+				continue;
+			}
+
+			$participant = $room->getParticipant($userId, false);
+			if (!$participant instanceof Participant || !($participant->getPermissions() & Attendee::PERMISSIONS_CHAT)) {
+				// No chat permissions is like read-only
 				continue;
 			}
 

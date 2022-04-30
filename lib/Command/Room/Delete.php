@@ -27,21 +27,14 @@ namespace OCA\Talk\Command\Room;
 
 use OC\Core\Command\Base;
 use OCA\Talk\Exceptions\RoomNotFoundException;
-use OCA\Talk\Manager;
 use OCA\Talk\Room;
+use Stecman\Component\Symfony\Console\BashCompletion\CompletionContext;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class Delete extends Base {
-	/** @var Manager */
-	public $manager;
-
-	public function __construct(Manager $manager) {
-		parent::__construct();
-
-		$this->manager = $manager;
-	}
+	use TRoomCommand;
 
 	protected function configure(): void {
 		$this
@@ -54,7 +47,7 @@ class Delete extends Base {
 			);
 	}
 
-	protected function execute(InputInterface $input, OutputInterface $output): ?int {
+	protected function execute(InputInterface $input, OutputInterface $output): int {
 		$token = $input->getArgument('token');
 
 		try {
@@ -64,7 +57,7 @@ class Delete extends Base {
 			return 1;
 		}
 
-		if (!in_array($room->getType(), [Room::GROUP_CALL, Room::PUBLIC_CALL], true)) {
+		if (!in_array($room->getType(), [Room::TYPE_GROUP, Room::TYPE_PUBLIC], true)) {
 			$output->writeln('<error>Room is no group call.</error>');
 			return 1;
 		}
@@ -73,5 +66,14 @@ class Delete extends Base {
 
 		$output->writeln('<info>Room successfully deleted.</info>');
 		return 0;
+	}
+
+	public function completeArgumentValues($argumentName, CompletionContext $context) {
+		switch ($argumentName) {
+			case 'token':
+				return $this->completeTokenValues($context);
+		}
+
+		return parent::completeArgumentValues($argumentName, $context);
 	}
 }

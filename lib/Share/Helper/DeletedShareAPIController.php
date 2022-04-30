@@ -37,11 +37,8 @@ use OCP\Share\IShare;
  * perform actions or checks specific to room shares.
  */
 class DeletedShareAPIController {
-
-	/** @var string */
-	private $userId;
-	/** @var Manager */
-	private $manager;
+	private string $userId;
+	private Manager $manager;
 
 	public function __construct(
 			string $UserId,
@@ -64,7 +61,7 @@ class DeletedShareAPIController {
 		$result = [];
 
 		try {
-			$room = $this->manager->getRoomByToken($share->getSharedWith());
+			$room = $this->manager->getRoomByToken($share->getSharedWith(), $this->userId);
 		} catch (RoomNotFoundException $e) {
 			return $result;
 		}

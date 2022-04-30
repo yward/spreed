@@ -21,20 +21,17 @@
 
 <template>
 	<div>
-		<SearchBox
-			v-if="displaySearchBox"
+		<SearchBox v-if="canSearch"
 			v-model="searchText"
-			:placeholder-text="t('spreed', 'Add participants to the conversation')"
+			:placeholder-text="searchBoxPlaceholder"
 			:is-searching="isSearching"
 			@input="handleInput"
 			@abort-search="abortSearch" />
-		<Caption v-if="isSearching"
+		<AppNavigationCaption v-if="isSearching && canAdd"
 			:title="t('spreed', 'Participants')" />
-		<CurrentParticipants
-			:search-text="searchText"
+		<CurrentParticipants :search-text="searchText"
 			:participants-initialised="participantsInitialised" />
-		<ParticipantsSearchResults
-			v-if="isSearching"
+		<ParticipantsSearchResults v-if="canAdd && isSearching"
 			:search-results="searchResults"
 			:contacts-loading="contactsLoading"
 			:no-results="noResults"
@@ -43,41 +40,36 @@
 </template>
 
 <script>
-import Caption from '../../Caption'
 import CurrentParticipants from './CurrentParticipants/CurrentParticipants'
 import SearchBox from '../../LeftSidebar/SearchBox/SearchBox'
 import debounce from 'debounce'
 import { EventBus } from '../../../services/EventBus'
-import { CONVERSATION, PARTICIPANT, WEBINAR } from '../../../constants'
 import { searchPossibleConversations } from '../../../services/conversationsService'
-import {
-	addParticipant,
-	fetchParticipants,
-} from '../../../services/participantsService'
-import isInLobby from '../../../mixins/isInLobby'
+import { addParticipant } from '../../../services/participantsService'
 import { loadState } from '@nextcloud/initial-state'
-import SHA1 from 'crypto-js/sha1'
-import Hex from 'crypto-js/enc-hex'
 import CancelableRequest from '../../../utils/cancelableRequest'
-import Axios from '@nextcloud/axios'
 import { showError } from '@nextcloud/dialogs'
+import AppNavigationCaption from '@nextcloud/vue/dist/Components/AppNavigationCaption'
 import ParticipantsSearchResults from './ParticipantsSearchResults/ParticipantsSearchResults'
+import getParticipants from '../../../mixins/getParticipants'
 
 export default {
 	name: 'ParticipantsTab',
 	components: {
+		AppNavigationCaption,
 		CurrentParticipants,
 		SearchBox,
-		Caption,
 		ParticipantsSearchResults,
 	},
 
-	mixins: [
-		isInLobby,
-	],
+	mixins: [getParticipants],
 
 	props: {
-		displaySearchBox: {
+		canSearch: {
+			type: Boolean,
+			required: true,
+		},
+		canAdd: {
 			type: Boolean,
 			required: true,
 		},
@@ -88,17 +80,17 @@ export default {
 			searchText: '',
 			searchResults: [],
 			contactsLoading: false,
-			participantsInitialised: false,
-			isCirclesEnabled: loadState('talk', 'circles_enabled'),
-			/**
-			 * Stores the cancel function for cancelableGetParticipants
-			 */
-			cancelGetParticipants: () => {},
-			fetchingParticipants: false,
+			isCirclesEnabled: loadState('spreed', 'circles_enabled'),
+			cancelSearchPossibleConversations: () => {},
 		}
 	},
 
 	computed: {
+		searchBoxPlaceholder() {
+			return this.canAdd
+				? t('spreed', 'Search or add participants')
+				: t('spreed', 'Search participants')
+		},
 		show() {
 			return this.$store.getters.getSidebarStatus
 		},
@@ -109,16 +101,7 @@ export default {
 			return this.$store.getters.getToken()
 		},
 		conversation() {
-			if (this.$store.getters.conversation(this.token)) {
-				return this.$store.getters.conversation(this.token)
-			}
-			return {
-				token: '',
-				displayName: '',
-				isFavorite: false,
-				type: CONVERSATION.TYPE.PUBLIC,
-				lobbyState: WEBINAR.LOBBY.NONE,
-			}
+			return this.$store.getters.conversation(this.token) || this.$store.getters.dummyConversation
 		},
 		isSearching() {
 			return this.searchText !== ''
@@ -129,43 +112,26 @@ export default {
 	},
 
 	beforeMount() {
-		EventBus.$on('routeChange', this.onRouteChange)
-		EventBus.$on('joinedConversation', this.onJoinedConversation)
+		EventBus.$on('route-change', this.abortSearch)
 
-		// FIXME this works only temporary until signaling is fixed to be only on the calls
-		// Then we have to search for another solution. Maybe the room list which we update
-		// periodically gets a hash of all online sessions?
-		EventBus.$on('Signaling::participantListChanged', this.debounceUpdateParticipants)
+		// Initialises the get participants mixin
+		this.initialiseGetParticipantsMixin()
 	},
 
 	beforeDestroy() {
-		EventBus.$off('routeChange', this.onRouteChange)
-		EventBus.$off('joinedConversation', this.onJoinedConversation)
-		EventBus.$off('Signaling::participantListChanged', this.debounceUpdateParticipants)
+		EventBus.$off('route-change', this.abortSearch)
+
+		this.cancelSearchPossibleConversations()
+		this.cancelSearchPossibleConversations = null
+
+		this.stopGetParticipantsMixin()
 	},
 
 	methods: {
-		/**
-		 * If the route changes, the search filter is reset
-		 */
-		onRouteChange() {
-			// Reset participantsInitialised when there is only the current user in the participant list
-			this.participantsInitialised = this.$store.getters.participantsList(this.token).length > 1
-			this.searchText = ''
-		},
-
-		/**
-		 * If the conversation has been joined, we get the participants
-		 */
-		onJoinedConversation() {
-			this.$nextTick(() => {
-				this.cancelableGetParticipants()
-			})
-		},
-
 		handleClose() {
 			this.$store.dispatch('hideSidebar')
 		},
+
 		handleInput() {
 			this.contactsLoading = true
 			this.searchResults = []
@@ -178,18 +144,23 @@ export default {
 			}
 		}, 250),
 
-		debounceUpdateParticipants: debounce(function() {
-			if (!this.fetchingParticipants) {
-				this.cancelableGetParticipants()
-			}
-		}, 2000),
-
 		async fetchSearchResults() {
 			try {
-				const response = await searchPossibleConversations(this.searchText, this.token)
-				this.searchResults = response.data.ocs.data
+				this.cancelSearchPossibleConversations('canceled')
+				const { request, cancel } = CancelableRequest(searchPossibleConversations)
+				this.cancelSearchPossibleConversations = cancel
+
+				const response = await request({
+					searchText: this.searchText,
+					token: this.token,
+				})
+
+				this.searchResults = response?.data?.ocs?.data || []
 				this.contactsLoading = false
 			} catch (exception) {
+				if (CancelableRequest.isCancel(exception)) {
+					return
+				}
 				console.error(exception)
 				showError(t('spreed', 'An error occurred while performing the search'))
 			}
@@ -197,65 +168,28 @@ export default {
 
 		/**
 		 * Add the selected group/user/circle to the conversation
-		 * @param {Object} item The autocomplete suggestion to start a conversation with
+		 *
+		 * @param {object} item The autocomplete suggestion to start a conversation with
 		 * @param {string} item.id The ID of the target
 		 * @param {string} item.source The source of the target
 		 */
 		async addParticipants(item) {
 			try {
 				await addParticipant(this.token, item.id, item.source)
-				this.searchText = ''
+				this.abortSearch()
 				this.cancelableGetParticipants()
 			} catch (exception) {
 				console.debug(exception)
-			}
-		},
-
-		async cancelableGetParticipants() {
-			if (this.token === '' || this.isInLobby) {
-				return
-			}
-
-			try {
-				// The token must be stored in a local variable to ensure that
-				// the same token is used after waiting.
-				const token = this.token
-				// Clear previous requests if there's one pending
-				this.cancelGetParticipants('Cancel get participants')
-				// Get a new cancelable request function and cancel function pair
-				this.fetchingParticipants = true
-				const { request, cancel } = CancelableRequest(fetchParticipants)
-				this.cancelGetParticipants = cancel
-				const participants = await request(token)
-				this.$store.dispatch('purgeParticipantsStore', token)
-				participants.data.ocs.data.forEach(participant => {
-					this.$store.dispatch('addParticipant', {
-						token: token,
-						participant,
-					})
-					if (participant.participantType === PARTICIPANT.TYPE.GUEST
-						|| participant.participantType === PARTICIPANT.TYPE.GUEST_MODERATOR) {
-						this.$store.dispatch('forceGuestName', {
-							token: token,
-							actorId: Hex.stringify(SHA1(participant.sessionId)),
-							actorDisplayName: participant.displayName,
-						})
-					}
-				})
-				this.participantsInitialised = true
-			} catch (exception) {
-				if (!Axios.isCancel(exception)) {
-					console.error(exception)
-					showError(t('spreed', 'An error occurred while fetching the participants'))
-				}
-			} finally {
-				this.fetchingParticipants = false
+				showError(t('spreed', 'An error occurred while adding the participants'))
 			}
 		},
 
 		// Ends the search operation
 		abortSearch() {
 			this.searchText = ''
+			if (this.cancelSearchPossibleConversations) {
+				this.cancelSearchPossibleConversations()
+			}
 		},
 	},
 }
@@ -274,6 +208,16 @@ export default {
 ::v-deep .app-sidebar__close {
 	top: 6px !important;
 	right: 6px !important;
+}
+
+/*
+ * The field will fully overlap the top of the sidebar content so
+ * that elements will scroll behind it
+ */
+.app-navigation-search {
+	top: -10px;
+	margin: -10px;
+	padding: 10px;
 }
 
 </style>

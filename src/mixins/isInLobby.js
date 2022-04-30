@@ -2,7 +2,7 @@
  *
  * @copyright Copyright (c) 2020, Daniel Calviño Sánchez <danxuliu@gmail.com>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -42,6 +42,7 @@ export default {
 			return this.conversation
 				&& this.conversation.lobbyState === WEBINAR.LOBBY.NON_MODERATORS
 				&& !this.isModerator
+				&& (this.conversation.permissions & PARTICIPANT.PERMISSIONS.LOBBY_IGNORE) === 0
 		},
 	},
 

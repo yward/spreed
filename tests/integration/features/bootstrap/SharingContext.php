@@ -596,9 +596,15 @@ class SharingContext implements Context {
 			'item_source' => 'A_NUMBER',
 			'file_source' => 'A_NUMBER',
 			'file_parent' => 'A_NUMBER',
-			'mail_send' => '0'
+			'mail_send' => '0',
 		];
-		$expectedFields = array_merge($defaultExpectedFields, $body->getRowsHash());
+
+		$fields = $body->getRowsHash();
+		if (isset($fields['share_type']) && ($fields['share_type'] === '10' || $fields['share_type'] === '11')) {
+			$defaultExpectedFields['share_with_link'] = 'URL';
+		}
+
+		$expectedFields = array_merge($defaultExpectedFields, $fields);
 
 		if (!array_key_exists('uid_file_owner', $expectedFields) &&
 				array_key_exists('uid_owner', $expectedFields)) {
@@ -614,13 +620,28 @@ class SharingContext implements Context {
 				array_key_exists('share_with', $expectedFields)) {
 			if ($expectedFields['share_with'] === 'private_conversation') {
 				$expectedFields['share_with'] = 'REGEXP /^private_conversation_[0-9a-f]{6}$/';
+				$expectedFields['share_with_link'] = '';
 			} else {
 				$expectedFields['share_with'] = FeatureContext::getTokenForIdentifier($expectedFields['share_with']);
 			}
 		}
 
+		if (array_key_exists('share_with_link', $expectedFields) &&
+			$expectedFields['share_with_link'] === 'URL') {
+			if (array_key_exists('share_with', $expectedFields)) {
+				$expectedFields['share_with_link'] = $this->baseUrl . 'index.php/call/' . $expectedFields['share_with'];
+			} else {
+				$expectedFields['share_with_link'] = 'REGEXP ' . '/\/call\//';
+			}
+		}
+
 		foreach ($expectedFields as $field => $value) {
-			$this->assertFieldIsInReturnedShare($field, $value, $returnedShare);
+			$share = json_decode(json_encode($returnedShare), true);
+			if (isset($share[$field]) && empty($share[$field]) && is_array($share[$field])) {
+				// Fix XML parsing fails
+				$share[$field] = '';
+			}
+			$this->assertFieldIsInReturnedShare($field, $value, $share);
 		}
 	}
 
@@ -647,6 +668,12 @@ class SharingContext implements Context {
 				$sharees[] = $expectedSharee;
 			}
 			$respondedArray = $this->getArrayOfShareesResponded($this->response, $shareeType);
+			usort($sharees, function ($a, $b) {
+				return $a[2] <=> $b[2]; // Sort by token
+			});
+			usort($respondedArray, function ($a, $b) {
+				return $a[2] <=> $b[2]; // Sort by token
+			});
 			\PHPUnit\Framework\Assert::assertEquals($sharees, $respondedArray);
 		} else {
 			$respondedArray = $this->getArrayOfShareesResponded($this->response, $shareeType);
@@ -934,7 +961,7 @@ class SharingContext implements Context {
 	 * @param string $contentExpected
 	 * @param \SimpleXMLElement $returnedShare
 	 */
-	private function assertFieldIsInReturnedShare(string $field, string $contentExpected, \SimpleXMLElement $returnedShare) {
+	private function assertFieldIsInReturnedShare(string $field, string $contentExpected, array $returnedShare) {
 		if ($contentExpected === 'IGNORE') {
 			return;
 		}
@@ -948,15 +975,15 @@ class SharingContext implements Context {
 		}
 
 		if ($contentExpected === 'A_NUMBER') {
-			\PHPUnit\Framework\Assert::assertTrue(is_numeric((string)$returnedShare->$field), "Field '$field' is not a number: " . $returnedShare->$field);
+			\PHPUnit\Framework\Assert::assertTrue(is_numeric((string)$returnedShare[$field]), "Field '$field' is not a number: " . $returnedShare[$field]);
 		} elseif ($contentExpected === 'A_TOKEN') {
 			// A token is composed by 15 characters from
 			// ISecureRandom::CHAR_HUMAN_READABLE.
-			\PHPUnit\Framework\Assert::assertRegExp('/^[abcdefgijkmnopqrstwxyzABCDEFGHJKLMNPQRSTWXYZ23456789]{15}$/', (string)$returnedShare->$field, "Field '$field' is not a token");
+			\PHPUnit\Framework\Assert::assertRegExp('/^[abcdefgijkmnopqrstwxyzABCDEFGHJKLMNPQRSTWXYZ23456789]{15}$/', (string)$returnedShare[$field], "Field '$field' is not a token");
 		} elseif (strpos($contentExpected, 'REGEXP ') === 0) {
-			\PHPUnit\Framework\Assert::assertRegExp(substr($contentExpected, strlen('REGEXP ')), (string)$returnedShare->$field, "Field '$field' does not match");
+			\PHPUnit\Framework\Assert::assertRegExp(substr($contentExpected, strlen('REGEXP ')), (string)$returnedShare[$field], "Field '$field' does not match");
 		} else {
-			\PHPUnit\Framework\Assert::assertEquals($contentExpected, (string)$returnedShare->$field, "Field '$field' does not match");
+			\PHPUnit\Framework\Assert::assertEquals($contentExpected, (string)$returnedShare[$field], "Field '$field' does not match");
 		}
 	}
 

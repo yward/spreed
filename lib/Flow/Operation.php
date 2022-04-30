@@ -32,19 +32,16 @@ use OCA\Talk\Manager as TalkManager;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCP\EventDispatcher\Event;
-use OCP\EventDispatcher\IEventDispatcher;
 use OCP\IL10N;
 use OCP\IURLGenerator;
 use OCP\IUser;
 use OCP\IUserSession;
-use OCP\Util;
 use OCP\WorkflowEngine\EntityContext\IDisplayText;
 use OCP\WorkflowEngine\EntityContext\IUrl;
 use OCP\WorkflowEngine\IEntity;
 use OCP\WorkflowEngine\IManager as FlowManager;
 use OCP\WorkflowEngine\IOperation;
 use OCP\WorkflowEngine\IRuleMatcher;
-use Symfony\Component\EventDispatcher\GenericEvent;
 use UnexpectedValueException;
 
 class Operation implements IOperation {
@@ -56,16 +53,11 @@ class Operation implements IOperation {
 		'ROOM_MENTION' => 3,
 	];
 
-	/** @var IL10N */
-	private $l;
-	/** @var IURLGenerator */
-	private $urlGenerator;
-	/** @var TalkManager */
-	private $talkManager;
-	/** @var IUserSession */
-	private $session;
-	/** @var ChatManager */
-	private $chatManager;
+	private IL10N $l;
+	private IURLGenerator $urlGenerator;
+	private TalkManager $talkManager;
+	private IUserSession $session;
+	private ChatManager $chatManager;
 
 	public function __construct(
 		IL10N $l,
@@ -79,14 +71,6 @@ class Operation implements IOperation {
 		$this->talkManager = $talkManager;
 		$this->session = $session;
 		$this->chatManager = $chatManager;
-	}
-
-	public static function register(IEventDispatcher $dispatcher): void {
-		$dispatcher->addListener(FlowManager::EVENT_NAME_REG_OPERATION, function (GenericEvent $event) {
-			$operation = \OC::$server->query(Operation::class);
-			$event->getSubject()->registerOperation($operation);
-			Util::addScript('spreed', 'flow');
-		});
 	}
 
 	public function getDisplayName(): string {
@@ -138,7 +122,7 @@ class Operation implements IOperation {
 					$room,
 					$participant,
 					'bots',
-					$participant->getUser(),
+					$participant->getAttendee()->getActorId(),
 					$this->prepareMention($mode, $participant) . $message,
 					new \DateTime(),
 					null,
@@ -154,7 +138,7 @@ class Operation implements IOperation {
 		}
 	}
 
-	protected function prepareText(IEntity $entity, string $eventName) {
+	protected function prepareText(IEntity $entity, string $eventName): string {
 		$message = $eventName;
 		if ($entity instanceof IDisplayText) {
 			$message = trim($entity->getDisplayText(3));
@@ -173,9 +157,9 @@ class Operation implements IOperation {
 			case self::MESSAGE_MODES['ROOM_MENTION']:
 				return '@all ';
 			case self::MESSAGE_MODES['SELF_MENTION']:
-				$hasWhitespace = strpos($participant->getUser(), ' ') !== false;
+				$hasWhitespace = strpos($participant->getAttendee()->getActorId(), ' ') !== false;
 				$enclosure = $hasWhitespace ? '"' : '';
-				return '@' . $enclosure . $participant->getUser() . $enclosure . ' ';
+				return '@' . $enclosure . $participant->getAttendee()->getActorId() . $enclosure . ' ';
 			case self::MESSAGE_MODES['NO_MENTION']:
 			default:
 				return '';
@@ -244,13 +228,13 @@ class Operation implements IOperation {
 	 * @throws RoomNotFoundException
 	 */
 	protected function getRoom(string $token, string $uid): Room {
-		return $this->talkManager->getRoomForParticipantByToken($token, $uid);
+		return $this->talkManager->getRoomForUserByToken($token, $uid);
 	}
 
 	/**
 	 * @throws ParticipantNotFoundException
 	 */
 	protected function getParticipant(string $uid, Room $room): Participant {
-		return $room->getParticipant($uid);
+		return $room->getParticipant($uid, false);
 	}
 }

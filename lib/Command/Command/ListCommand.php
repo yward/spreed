@@ -32,8 +32,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 class ListCommand extends Base {
 	use TRenderCommand;
 
-	/** @var CommandService */
-	private $service;
+	private CommandService $service;
 
 	public function __construct(CommandService $service) {
 		parent::__construct();
@@ -50,7 +49,7 @@ class ListCommand extends Base {
 		;
 	}
 
-	protected function execute(InputInterface $input, OutputInterface $output) {
+	protected function execute(InputInterface $input, OutputInterface $output): int {
 		$app = $input->getArgument('app');
 		if ($app === null) {
 			$commands = $this->service->findAll();
@@ -59,5 +58,6 @@ class ListCommand extends Base {
 		}
 
 		$this->renderCommands($input->getOption('output'), $output, $commands, true);
+		return 0;
 	}
 }

@@ -20,17 +20,15 @@
 -->
 
 <template>
-	<form
-		class="app-navigation-search"
+	<form class="app-navigation-search"
 		@submit.prevent="handleSubmit">
-		<input
-			ref="searchConversations"
+		<input ref="searchConversations"
 			v-model="localValue"
 			class="app-navigation-search__input"
 			type="text"
-			:placeHolder="placeholderText">
-		<button
-			v-if="isSearching"
+			:placeHolder="placeholderText"
+			@keypress.enter.prevent="handleSubmit">
+		<button v-if="isSearching"
 			class="abort-search icon-close"
 			@click.prevent="abortSearch" />
 	</form>
@@ -47,7 +45,7 @@ export default {
 		 */
 		placeholderText: {
 			type: String,
-			default: t('spreed', 'Search conversations or contacts'),
+			default: t('spreed', 'Search conversations or users'),
 		},
 		/**
 		 * The value of the input field, when receiving it as a prop the localValue
@@ -65,7 +63,7 @@ export default {
 			default: false,
 		},
 	},
-	data: function() {
+	data() {
 		return {
 			localValue: '',
 		}
@@ -84,10 +82,10 @@ export default {
 		/**
 		 * Listen to routeChange global events and focus on the input
 		 */
-		EventBus.$on('routeChange', this.focusInputIfRoot)
+		EventBus.$on('route-change', this.focusInputIfRoot)
 	},
 	beforeDestroy() {
-		EventBus.$off('routeChange', this.focusInputIfRoot)
+		EventBus.$off('route-change', this.focusInputIfRoot)
 	},
 	methods: {
 		// Focus the input field of the searchbox component.
@@ -119,7 +117,7 @@ export default {
 </script>
 
 <style lang="scss" scoped>
-@import '../../../assets/variables.scss';
+@import '../../../assets/variables';
 
 .app-navigation-search {
 	flex: 1 0 auto;
@@ -129,16 +127,16 @@ export default {
 	z-index: 1;
 	display: flex;
 	justify-content: center;
-
 	&__input {
 		align-self: center;
 		width: 100%;
-		margin: 0;
+		margin: 4px;
+		padding-left: 8px;
 	}
 }
 
 .abort-search {
-	margin-left: -28px;
+	margin-left: -34px;
 	z-index: 1;
 	border: none;
 	background-color: transparent

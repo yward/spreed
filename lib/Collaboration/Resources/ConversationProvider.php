@@ -36,13 +36,9 @@ use OCP\IUser;
 use OCP\IUserSession;
 
 class ConversationProvider implements IProvider {
-
-	/** @var Manager */
-	protected $manager;
-	/** @var IUserSession */
-	protected $userSession;
-	/** @var IURLGenerator */
-	protected $urlGenerator;
+	protected Manager $manager;
+	protected IUserSession $userSession;
+	protected IURLGenerator $urlGenerator;
 
 	public function __construct(Manager $manager,
 								IUserSession $userSession,
@@ -54,13 +50,14 @@ class ConversationProvider implements IProvider {
 
 	public function getResourceRichObject(IResource $resource): array {
 		try {
-			$room = $this->manager->getRoomByToken($resource->getId());
 			$user = $this->userSession->getUser();
+			$userId = $user instanceof IUser ? $user->getUID() : '';
+			$room = $this->manager->getRoomByToken($resource->getId(), $userId);
 
 			$iconURL = $this->urlGenerator->getAbsoluteURL($this->urlGenerator->imagePath('spreed', 'app-dark.svg'));
 			/**
 			 * Disabled for now, because it would show a square avatar
-			 * if ($room->getType() === Room::ONE_TO_ONE_CALL) {
+			 * if ($room->getType() === Room::TYPE_ONE_TO_ONE) {
 			 * $iconURL = $this->urlGenerator->linkToRouteAbsolute('core.avatar.getAvatar', ['userId' => 'admin', 'size' => 32]);
 			 * }
 			 */
@@ -68,7 +65,7 @@ class ConversationProvider implements IProvider {
 			return [
 				'type' => 'room',
 				'id' => $resource->getId(),
-				'name' => $room->getDisplayName($user instanceof IUser ? $user->getUID() : ''),
+				'name' => $room->getDisplayName($userId),
 				'call-type' => $this->getRoomType($room),
 				'iconUrl' => $iconURL,
 				'link' => $this->urlGenerator->linkToRouteAbsolute('spreed.Page.showCall', ['token' => $room->getToken()])
@@ -85,15 +82,15 @@ class ConversationProvider implements IProvider {
 		}
 
 		try {
-			$room = $this->manager->getRoomForParticipantByToken(
+			$room = $this->manager->getRoomForUserByToken(
 				$resource->getId(),
 				$userId
 			);
 
 			// Logged in users need to have a regular participant,
 			// before they can do anything with the room.
-			$participant = $room->getParticipant($userId);
-			return $participant->getParticipantType() !== Participant::USER_SELF_JOINED;
+			$participant = $room->getParticipant($userId, false);
+			return $participant->getAttendee()->getParticipantType() !== Participant::USER_SELF_JOINED;
 		} catch (RoomNotFoundException $e) {
 			throw new ResourceException('Conversation not found');
 		} catch (ParticipantNotFoundException $e) {
@@ -112,11 +109,11 @@ class ConversationProvider implements IProvider {
 	 */
 	protected function getRoomType(Room $room): string {
 		switch ($room->getType()) {
-			case Room::ONE_TO_ONE_CALL:
+			case Room::TYPE_ONE_TO_ONE:
 				return 'one2one';
-			case Room::GROUP_CALL:
+			case Room::TYPE_GROUP:
 				return 'group';
-			case Room::PUBLIC_CALL:
+			case Room::TYPE_PUBLIC:
 				return 'public';
 			default:
 				throw new \InvalidArgumentException('Unknown room type');

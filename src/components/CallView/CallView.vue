@@ -21,98 +21,136 @@
 
 <template>
 	<div id="call-container">
-		<EmptyCallView v-if="!remoteParticipantsCount && !screenSharingActive && !isGrid" />
+		<EmptyCallView v-if="!remoteParticipantsCount && !screenSharingActive && !isGrid"
+			:is-sidebar="isSidebar" />
 		<div id="videos">
-			<!-- Promoted "autopilot" mode -->
-			<div v-if="showPromoted" ref="videoContainer" class="video__promoted autopilot">
-				<template v-for="callParticipantModel in reversedCallParticipantModels">
-					<Video
-						v-if="sharedDatas[callParticipantModel.attributes.peerId].promoted"
-						:key="callParticipantModel.attributes.peerId"
+			<template v-if="!isGrid">
+				<!-- Selected video override mode -->
+				<div v-if="showSelectedVideo"
+					ref="videoContainer"
+					class="video__promoted selected-video"
+					:class="{'full-page': isOneToOne}">
+					<template v-for="callParticipantModel in reversedCallParticipantModels">
+						<Video v-if="callParticipantModel.attributes.peerId === selectedVideoPeerId"
+							:key="callParticipantModel.attributes.selectedVideoPeerId"
+							:token="token"
+							:model="callParticipantModel"
+							:shared-data="sharedDatas[selectedVideoPeerId]"
+							:show-talking-highlight="false"
+							:is-grid="true"
+							:is-big="true"
+							:fit-video="true" />
+					</template>
+				</div>
+				<!-- Screens -->
+				<div v-else-if="!isSidebar && (showLocalScreen || showRemoteScreen || showSelectedScreen)" id="screens">
+					<!-- local screen -->
+					<Screen v-if="showLocalScreen"
 						:token="token"
-						:model="callParticipantModel"
-						:shared-data="sharedDatas[callParticipantModel.attributes.peerId]"
-						:show-talking-highlight="false"
-						:is-grid="true"
-						:fit-video="true"
-						:is-big="true"
-						:is-sidebar="isSidebar"
-						@switchScreenToId="_switchScreenToId" />
-				</template>
-			</div>
-			<!-- Selected override mode -->
-			<div v-if="showSelected" ref="videoContainer" class="video__promoted override">
-				<template v-for="callParticipantModel in reversedCallParticipantModels">
-					<Video
-						v-if="callParticipantModel.attributes.peerId === selectedVideoPeerId"
-						:key="callParticipantModel.attributes.selectedVideoPeerId"
-						:token="token"
-						:model="callParticipantModel"
-						:shared-data="sharedDatas[selectedVideoPeerId]"
-						:show-talking-highlight="false"
-						:is-grid="true"
-						:is-big="true"
-						:fit-video="true"
-						@switchScreenToId="_switchScreenToId" />
-				</template>
-			</div>
-			<!-- Screens -->
-			<div v-if="!isSidebar && (showLocalScreen || showRemoteScreen)" id="screens">
-				<!-- local screen -->
-				<Screen v-show="showLocalScreen"
-					:token="token"
-					:local-media-model="localMediaModel"
-					:shared-data="localSharedData"
-					:is-big="true" />
-				<!-- remote screen -->
-				<template v-for="callParticipantModel in reversedCallParticipantModels">
-					<Screen
-						v-if="callParticipantModel.attributes.peerId === shownRemoteScreenPeerId"
-						:key="'screen-' + callParticipantModel.attributes.peerId"
-						:token="token"
-						:call-participant-model="callParticipantModel"
-						:shared-data="sharedDatas[shownRemoteScreenPeerId]"
+						:local-media-model="localMediaModel"
+						:shared-data="localSharedData"
 						:is-big="true" />
-				</template>
-			</div>
+					<!-- remote screen -->
+					<template v-else>
+						<template v-for="callParticipantModel in reversedCallParticipantModels">
+							<Screen v-if="callParticipantModel.attributes.peerId === shownRemoteScreenPeerId"
+								:key="'screen-' + callParticipantModel.attributes.peerId"
+								:token="token"
+								:call-participant-model="callParticipantModel"
+								:shared-data="sharedDatas[shownRemoteScreenPeerId]"
+								:is-big="true" />
+						</template>
+					</template>
+				</div>
+				<!-- Local Video Override mode (following own video) -->
+				<div v-else-if="showLocalVideo"
+					ref="videoContainer"
+					class="video__promoted selected-video--local"
+					:class="{'full-page': isOneToOne}">
+					<LocalVideo ref="localVideo"
+						:fit-video="true"
+						:is-stripe="false"
+						:show-controls="false"
+						:is-big="true"
+						:token="token"
+						:local-media-model="localMediaModel"
+						:video-container-aspect-ratio="videoContainerAspectRatio"
+						:local-call-participant-model="localCallParticipantModel"
+						:is-sidebar="false" />
+				</div>
+				<!-- Promoted "autopilot" mode -->
+				<div v-else
+					ref="videoContainer"
+					class="video__promoted autopilot"
+					:class="{'full-page': isOneToOne}">
+					<template v-for="callParticipantModel in reversedCallParticipantModels">
+						<Video v-if="sharedDatas[callParticipantModel.attributes.peerId].promoted"
+							:key="callParticipantModel.attributes.peerId"
+							:token="token"
+							:model="callParticipantModel"
+							:shared-data="sharedDatas[callParticipantModel.attributes.peerId]"
+							:show-talking-highlight="false"
+							:is-grid="true"
+							:fit-video="true"
+							:is-big="true"
+							:is-one-to-one="isOneToOne"
+							:is-sidebar="isSidebar" />
+					</template>
+				</div>
+			</template>
+
 			<!-- Stripe or fullscreen grid depending on `isGrid` -->
-			<Grid
-				v-if="showGrid"
+			<Grid v-if="!isSidebar"
 				v-bind="$attrs"
 				:is-stripe="!isGrid"
 				:token="token"
 				:fit-video="true"
 				:has-pagination="true"
+				:min-height="isGrid && !isSidebar ? 240 : 150"
+				:min-width="isGrid && !isSidebar ? 320 : 200"
+				:videos-cap="gridVideosCap"
+				:videos-cap-enforced="gridVideosCapEnforced"
 				:call-participant-models="callParticipantModels"
+				:screens="screens"
 				:target-aspect-ratio="gridTargetAspectRatio"
 				:local-media-model="localMediaModel"
 				:local-call-participant-model="localCallParticipantModel"
 				:shared-datas="sharedDatas"
-				@select-video="handleSelectVideo" />
-			<!-- Local video if the conversation is 1to1 or if sidebar -->
-			<LocalVideo
-				v-if="isOneToOneView"
+				@select-video="handleSelectVideo"
+				@click-local-video="handleClickLocalVideo" />
+			<!-- Local video if sidebar -->
+			<LocalVideo v-if="isSidebar && !showLocalVideo"
 				ref="localVideo"
 				class="local-video"
 				:class="{ 'local-video--sidebar': isSidebar }"
+				:show-controls="false"
 				:fit-video="true"
 				:is-stripe="true"
+				:token="token"
 				:local-media-model="localMediaModel"
 				:video-container-aspect-ratio="videoContainerAspectRatio"
 				:local-call-participant-model="localCallParticipantModel"
 				:is-sidebar="isSidebar"
-				@switchScreenToId="1" />
+				@click-video="handleClickLocalVideo" />
 		</div>
 	</div>
 </template>
 
 <script>
+import { loadState } from '@nextcloud/initial-state'
 import Grid from './Grid/Grid'
+import { SIMULCAST } from '../../constants'
 import { localMediaModel, localCallParticipantModel, callParticipantCollection } from '../../utils/webrtc/index'
+import RemoteVideoBlocker from '../../utils/webrtc/RemoteVideoBlocker'
+import { fetchPeers } from '../../services/callsService'
+import { showMessage } from '@nextcloud/dialogs'
 import EmptyCallView from './shared/EmptyCallView'
 import Video from './shared/Video'
 import LocalVideo from './shared/LocalVideo'
 import Screen from './shared/Screen'
+import debounce from 'debounce'
+import { EventBus } from '../../services/EventBus'
+import { subscribe, unsubscribe } from '@nextcloud/event-bus'
 
 export default {
 	name: 'CallView',
@@ -130,7 +168,7 @@ export default {
 			type: String,
 			required: true,
 		},
-		// Determines wether this component is used in the sidebar
+		// Determines whether this component is used in the sidebar
 		isSidebar: {
 			type: Boolean,
 			default: false,
@@ -140,9 +178,10 @@ export default {
 	data() {
 		return {
 			screens: [],
-			localMediaModel: localMediaModel,
-			localCallParticipantModel: localCallParticipantModel,
+			localMediaModel,
+			localCallParticipantModel,
 			sharedDatas: {},
+			raisedHandUnwatchers: {},
 			speakingUnwatchers: {},
 			screenUnwatchers: {},
 			speakers: [],
@@ -150,13 +189,13 @@ export default {
 			localSharedData: {
 				screenVisible: true,
 			},
-			callParticipantCollection: callParticipantCollection,
+			callParticipantCollection,
 			videoContainerAspectRatio: 0,
 		}
 	},
 	computed: {
 		callParticipantModels() {
-			return callParticipantCollection.callParticipantModels
+			return callParticipantCollection.callParticipantModels.filter(callParticipantModel => !callParticipantModel.attributes.internal)
 		},
 
 		reversedCallParticipantModels() {
@@ -171,6 +210,18 @@ export default {
 			return this.callParticipantModels.filter(callParticipantModel => callParticipantModel.attributes.screen)
 		},
 
+		callParticipantModelsWithVideo() {
+			return this.callParticipantModels.filter(callParticipantModel => {
+				return callParticipantModel.attributes.videoAvailable
+					&& this.sharedDatas[callParticipantModel.attributes.peerId].remoteVideoBlocker.isVideoEnabled()
+					&& (typeof callParticipantModel.attributes.stream === 'object')
+			})
+		},
+
+		injectableLocalMediaModel() {
+			return localMediaModel
+		},
+
 		localScreen() {
 			return localMediaModel.attributes.localScreen
 		},
@@ -180,52 +231,81 @@ export default {
 		},
 
 		isGrid() {
-			return this.$store.getters.isGrid
+			return this.$store.getters.isGrid && !this.isSidebar
+		},
+
+		gridTargetAspectRatio() {
+			if (this.isGrid) {
+				return 1.5
+			} else {
+				return 1
+			}
+		},
+
+		gridVideosCap() {
+			return parseInt(loadState('spreed', 'grid_videos_limit'), 10)
+		},
+
+		gridVideosCapEnforced() {
+			return loadState('spreed', 'grid_videos_limit_enforced')
 		},
 
 		selectedVideoPeerId() {
 			return this.$store.getters.selectedVideoPeerId
 		},
 
+		hasSelectedScreen() {
+			return this.selectedVideoPeerId !== null && this.screens.includes(this.selectedVideoPeerId)
+		},
+
 		hasSelectedVideo() {
-			return this.$store.getters.selectedVideoPeerId !== null
+			return this.selectedVideoPeerId !== null && !this.screens.includes(this.selectedVideoPeerId)
 		},
 
 		isOneToOne() {
 			return this.callParticipantModels.length === 1
 		},
-
-		isOneToOneView() {
-			return (this.isOneToOne && !this.isGrid) || this.isSidebar
+		hasLocalVideo() {
+			return this.localMediaModel.attributes.videoEnabled
 		},
 
-		showGrid() {
-			return (!this.isOneToOneView || this.showLocalScreen) && !this.isSidebar
+		hasRemoteVideo() {
+			return this.callParticipantModelsWithVideo.length > 0
 		},
 
 		hasLocalScreen() {
-			return this.localMediaModel.attributes.localScreen
+			return !!this.localMediaModel.attributes.localScreen
 		},
 
 		hasRemoteScreen() {
 			return this.callParticipantModelsWithScreen.length > 0
 		},
+		// The following conditions determine what to show in the "Big container"
+		// of the promoted view
 
-		showSelected() {
-			return !this.isGrid && this.hasSelectedVideo && !this.showLocalScreen && !this.showRemoteScreen
+		// Show selected video (other than local)
+		showSelectedVideo() {
+			return this.hasSelectedVideo && !this.showLocalVideo
 		},
 
-		showPromoted() {
-			return !this.isGrid && !this.hasSelectedVideo && !this.screenSharingActive
+		showSelectedScreen() {
+			return this.hasSelectedScreen && !this.showLocalVideo
 		},
 
+		// Shows the local video if selected
+		showLocalVideo() {
+			return this.hasLocalVideo && this.selectedVideoPeerId === 'local'
+		},
+
+		// Show local screen
 		showLocalScreen() {
-			return this.screens.filter(screen => screen === localCallParticipantModel.attributes.peerId).length === 1
-
+			return this.hasLocalScreen && this.selectedVideoPeerId === null && this.screens[0] === localCallParticipantModel.attributes.peerId
 		},
 
+		// Show somebody else's screen. This will show the screen of the last
+		// person that shared it.
 		showRemoteScreen() {
-			return this.shownRemoteScreenPeerId !== null
+			return this.shownRemoteScreenPeerId !== null && !this.showSelectedVideo && !this.showSelectedScreen
 		},
 
 		shownRemoteScreenPeerId() {
@@ -237,70 +317,102 @@ export default {
 				return null
 			}
 
-			if (this.showLocalScreen) {
-				return null
-			}
-
-			if (!this.hasSelectedVideo) {
-				return this.screens[0]
-			}
-
 			if (this.screens.includes(this.selectedVideoPeerId)) {
 				return this.selectedVideoPeerId
 			}
 
-			return null
-		},
-
-		gridTargetAspectRatio() {
-			if (this.isStripe) {
-				return 1
-			} else {
-				return 1.5
+			if (!this.hasSelectedScreen) {
+				return this.screens[0]
 			}
+
+			return null
 		},
 	},
 	watch: {
-		localScreen: function(localScreen) {
+		localScreen(localScreen) {
 			this._setScreenAvailable(localCallParticipantModel.attributes.peerId, localScreen)
 		},
 
-		callParticipantModels: function(models) {
+		callParticipantModels(models) {
 			this.updateDataFromCallParticipantModels(models)
 		},
 
-		'speakers': function() {
+		isGrid() {
+			this.adjustSimulcastQuality()
+		},
+
+		selectedVideoPeerId() {
+			this.adjustSimulcastQuality()
+		},
+
+		speakers() {
 			this._setPromotedParticipant()
 		},
 
-		'screenSharingActive': function() {
+		screenSharingActive() {
 			this._setPromotedParticipant()
 		},
 
-		'screens': function() {
+		screens() {
 			this._setScreenVisible()
 
 		},
 
-		'callParticipantModelsWithScreen': function(newValue, previousValue) {
+		callParticipantModelsWithScreen(newValue, previousValue) {
 			// Everytime a new screen is shared, switch to promoted view
 			if (newValue.length > previousValue.length) {
-
-				this.$store.dispatch('isGrid', false)
+				this.$store.dispatch('startPresentation')
+			} else if (newValue.length === 0 && previousValue.length > 0 && !this.hasLocalScreen) {
+				// last screen share stopped, reopening stripe
+				this.$store.dispatch('stopPresentation')
 			}
 		},
-		'showLocalScreen': function(showLocalScreen) {
+		showLocalScreen(showLocalScreen) {
 			// Everytime the local screen is shared, switch to promoted view
 			if (showLocalScreen) {
-				this.$store.dispatch('isGrid', false)
+				this.$store.dispatch('startPresentation')
+			} else if (this.callParticipantModelsWithScreen.length === 0) {
+				this.$store.dispatch('stopPresentation')
+			}
+		},
+		hasLocalVideo(newValue) {
+			if (this.$store.getters.selectedVideoPeerId === 'local') {
+				if (!newValue) {
+					this.$store.dispatch('selectedVideoPeerId', null)
+				}
 			}
 		},
 
+		showSelectedVideo(newVal) {
+			if (newVal) {
+				this.$store.dispatch('setCallViewMode', { isGrid: false })
+			}
+		},
+
+		showSelectedScreen(newVal) {
+			if (newVal) {
+				this.$store.dispatch('setCallViewMode', { isGrid: false })
+			}
+		},
 	},
 	created() {
 		// Ensure that data is properly initialized before mounting the
 		// subviews.
 		this.updateDataFromCallParticipantModels(this.callParticipantModels)
+	},
+	mounted() {
+		EventBus.$on('refresh-peer-list', this.debounceFetchPeers)
+
+		callParticipantCollection.on('remove', this._lowerHandWhenParticipantLeaves)
+
+		subscribe('switch-screen-to-id', this._switchScreenToId)
+	},
+	beforeDestroy() {
+		EventBus.$off('refresh-peer-list', this.debounceFetchPeers)
+
+		callParticipantCollection.off('remove', this._lowerHandWhenParticipantLeaves)
+
+		unsubscribe('switch-screen-to-id', this._switchScreenToId)
 	},
 	methods: {
 		/**
@@ -328,6 +440,10 @@ export default {
 				// Not reactive, but not a problem
 				delete this.screenUnwatchers[removedModelId]
 
+				this.raisedHandUnwatchers[removedModelId]()
+				// Not reactive, but not a problem
+				delete this.raisedHandUnwatchers[removedModelId]
+
 				const index = this.speakers.findIndex(speaker => speaker.id === removedModelId)
 				this.speakers.splice(index, 1)
 
@@ -337,7 +453,7 @@ export default {
 			addedModels.forEach(addedModel => {
 				const sharedData = {
 					promoted: false,
-					videoEnabled: true,
+					remoteVideoBlocker: new RemoteVideoBlocker(addedModel),
 					screenVisible: false,
 				}
 
@@ -361,6 +477,15 @@ export default {
 				}, function(screen) {
 					this._setScreenAvailable(addedModel.attributes.peerId, screen)
 				})
+
+				// Not reactive, but not a problem
+				this.raisedHandUnwatchers[addedModel.attributes.peerId] = this.$watch(function() {
+					return addedModel.attributes.raisedHand
+				}, function(raisedHand) {
+					this._handleParticipantRaisedHand(addedModel, raisedHand)
+				})
+
+				this.adjustSimulcastQualityForParticipant(addedModel)
 			})
 		},
 
@@ -394,6 +519,33 @@ export default {
 			}
 		},
 
+		_handleParticipantRaisedHand(callParticipantModel, raisedHand) {
+			const nickName = callParticipantModel.attributes.name || callParticipantModel.attributes.userId
+			// sometimes the nick name is not available yet...
+			if (nickName) {
+				if (raisedHand?.state) {
+					showMessage(t('spreed', '{nickName} raised their hand.', { nickName }))
+				}
+			} else {
+				if (raisedHand?.state) {
+					showMessage(t('spreed', 'A participant raised their hand.'))
+				}
+			}
+
+			// update in callViewStore
+			this.$store.dispatch('setParticipantHandRaised', {
+				sessionId: callParticipantModel.attributes.nextcloudSessionId,
+				raisedHand,
+			})
+		},
+
+		_lowerHandWhenParticipantLeaves(callParticipantCollection, callParticipantModel) {
+			this.$store.dispatch('setParticipantHandRaised', {
+				sessionId: callParticipantModel.attributes.nextcloudSessionId,
+				raisedHand: false,
+			})
+		},
+
 		_setScreenAvailable(id, screen) {
 			if (screen) {
 				this.screens.unshift(id)
@@ -415,6 +567,8 @@ export default {
 			if (!this.screenSharingActive && this.speakers.length) {
 				this.sharedDatas[this.speakers[0].id].promoted = true
 			}
+
+			this.adjustSimulcastQuality()
 		},
 
 		_switchScreenToId(id) {
@@ -423,6 +577,8 @@ export default {
 				return
 			}
 
+			this.$store.dispatch('startPresentation')
+			this.$store.dispatch('selectedVideoPeerId', null)
 			this.screens.splice(index, 1)
 			this.screens.unshift(id)
 		},
@@ -454,34 +610,82 @@ export default {
 			this.videoContainerAspectRatio = videoContainerWidth / VideoContainerHeight
 		},
 		handleSelectVideo(peerId) {
-			this.$store.dispatch('isGrid', false)
+			if (this.isSidebar) {
+				return
+			}
+			this.$store.dispatch('startPresentation')
 			this.$store.dispatch('selectedVideoPeerId', peerId)
+			this.isLocalVideoSelected = false
+		},
+		handleClickLocalVideo() {
+			// DO nothing if no video
+			if (!this.hasLocalVideo || this.isSidebar) {
+				return
+			}
+			// Deselect possible selected video
+			this.$store.dispatch('selectedVideoPeerId', 'local')
+			this.$store.dispatch('startPresentation')
+		},
+
+		debounceFetchPeers: debounce(async function() {
+			const token = this.token
+			try {
+				const response = await fetchPeers(token)
+				this.$store.dispatch('purgePeersStore')
+
+				response.data.ocs.data.forEach((peer) => {
+					this.$store.dispatch('addPeer', {
+						token,
+						peer,
+					})
+				})
+			} catch (exception) {
+				// Just means guests have no name, so don't error …
+				console.error(exception)
+			}
+		}, 1500),
+
+		adjustSimulcastQuality() {
+			this.callParticipantModels.forEach(callParticipantModel => {
+				this.adjustSimulcastQualityForParticipant(callParticipantModel)
+			})
+		},
+
+		adjustSimulcastQualityForParticipant(callParticipantModel) {
+			if (this.isGrid) {
+				callParticipantModel.setSimulcastVideoQuality(SIMULCAST.MEDIUM)
+			} else if (this.sharedDatas[callParticipantModel.attributes.peerId].promoted || this.selectedVideoPeerId === callParticipantModel.attributes.peerId) {
+				callParticipantModel.setSimulcastVideoQuality(SIMULCAST.HIGH)
+			} else {
+				callParticipantModel.setSimulcastVideoQuality(SIMULCAST.LOW)
+			}
 		},
 	},
 }
 </script>
 
 <style lang="scss" scoped>
-@import '../../assets/variables.scss';
+@import '../../assets/variables';
 
 .call-view {
 	width: 100%;
 	height: 100%;
 	overflow: hidden;
-	background-color: black,
+	background-color: $color-call-background;
 }
 
 #call-container {
 	width: 100%;
 	height: 100%;
-	background-color: #000;
+	background-color: $color-call-background;
 }
 
 #videos {
 	position: absolute;
 	width: 100%;
-	height: 100%;
-	top: 0;
+	height: calc(100% - 60px);
+	top: 60px;
+	overflow: hidden;
 	display: -webkit-box;
 	display: -moz-box;
 	display: -ms-flexbox;
@@ -492,6 +696,7 @@ export default {
 	-webkit-align-items: flex-end;
 	align-items: flex-end;
 	flex-direction: column;
+	padding: 1px 8px 8px 8px;
 }
 
 .video__promoted {
@@ -499,6 +704,11 @@ export default {
 	height: 100%;
 	width: 100%;
 	display: block;
+}
+
+.video__promoted.full-page {
+	/* make the promoted video cover the whole call view */
+	position: static;
 }
 
 .local-video {
@@ -526,14 +736,6 @@ export default {
 	 filter: contrast(1.1) saturate(1.1) sepia(.1);
 	 */
 	vertical-align: top; /* fix white line below video */
-}
-
-#videos .videoContainer.not-connected ::v-deep {
-	video,
-	.avatardiv,
-	.avatar.guest {
-		opacity: 0.5;
-	}
 }
 
 #videos .videoContainer ::v-deep .avatardiv {
@@ -624,7 +826,7 @@ export default {
 }
 
 #videos .videoContainer.speaking:not(.videoView) ::v-deep .nameIndicator,
-#videos .videoContainer.videoView.speaking ::v-deep .nameIndicator .icon-audio {
+#videos .videoContainer.videoView.speaking ::v-deep .nameIndicator .microphone-icon {
 	animation: pulse 1s;
 	animation-iteration-count: infinite;
 }
@@ -640,4 +842,5 @@ export default {
 		opacity: 1;
 	}
 }
+
 </style>

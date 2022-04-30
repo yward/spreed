@@ -27,47 +27,60 @@
 		@mouseleave="hideShadow"
 		@click="handleClickVideo">
 		<transition name="fade">
-			<video
-				v-show="showVideo"
-				ref="video"
-				:class="videoClass"
-				class="video" />
+			<div v-show="showVideo"
+				:class="videoWrapperClass"
+				class="videoWrapper">
+				<video ref="video"
+					:disablePictureInPicture="!isBig"
+					:class="videoClass"
+					class="video" />
+			</div>
 		</transition>
 		<transition name="fade">
-			<Screen
-				v-if="showSharedScreen"
+			<Screen v-if="showSharedScreen"
 				:is-big="isBig"
 				:token="token"
 				:call-participant-model="model"
 				:shared-data="sharedData" />
 		</transition>
 		<transition-group name="fade">
-			<div
-				v-if="showBackgroundAndAvatar"
+			<div v-if="showBackgroundAndAvatar"
 				:key="'backgroundAvatar'"
 				class="avatar-container">
-				<VideoBackground
-					:display-name="model.attributes.name"
-					:user="model.attributes.userId" />
-				<Avatar v-if="model.attributes.userId"
-					:size="avatarSize"
-					:disable-menu="true"
-					:disable-tooltip="true"
-					:user="model.attributes.userId"
-					:display-name="model.attributes.name"
-					:class="avatarClass" />
-				<div v-if="!model.attributes.userId"
-					:class="guestAvatarClass"
-					class="avatar guest">
-					{{ firstLetterOfGuestName }}
-				</div>
+				<template v-if="participantUserId">
+					<VideoBackground :display-name="participantName"
+						:user="participantUserId" />
+					<Avatar :size="avatarSize"
+						:disable-menu="true"
+						:disable-tooltip="true"
+						:user="participantUserId"
+						:display-name="participantName"
+						:show-user-status="false"
+						:class="avatarClass" />
+				</template>
+				<template v-else>
+					<VideoBackground :display-name="participantName" />
+					<div :class="guestAvatarClass"
+						class="avatar guest">
+						{{ firstLetterOfGuestName }}
+					</div>
+				</template>
 			</div>
 			<div v-if="showPlaceholderForPromoted"
 				:key="'placeholderForPromoted'"
 				class="placeholder-for-promoted">
-				<AccountCircle v-if="isPromoted || isSelected" fill-color="#FFFFFF" :size="36" />
+				<AccountCircle v-if="isPromoted || isSelected"
+					decorative
+					title=""
+					fill-color="#FFFFFF"
+					:size="36" />
 			</div>
 		</transition-group>
+		<div v-if="connectionMessage"
+			:class="connectionMessageClass"
+			class="connection-message">
+			{{ connectionMessage }}
+		</div>
 		<VideoBottomBar v-bind="$props"
 			:has-shadow="hasVideo"
 			:participant-name="participantName" />
@@ -82,11 +95,13 @@ import Avatar from '@nextcloud/vue/dist/Components/Avatar'
 import { ConnectionState } from '../../../utils/webrtc/models/CallParticipantModel'
 import SHA1 from 'crypto-js/sha1'
 import Hex from 'crypto-js/enc-hex'
-import video from './video.js'
+import video from '../../../mixins/video.js'
 import VideoBackground from './VideoBackground'
 import AccountCircle from 'vue-material-design-icons/AccountCircle'
 import VideoBottomBar from './VideoBottomBar'
 import Screen from './Screen'
+import { EventBus } from '../../../services/EventBus'
+import { ATTENDEE } from '../../../constants'
 
 export default {
 
@@ -138,23 +153,17 @@ export default {
 			type: Boolean,
 			default: false,
 		},
-		// True when this component is used in the big video slot in the
-		// promoted view
-		isBig: {
-			type: Boolean,
-			default: false,
-		},
 		// True when this component is used as main video in the sidebar
 		isSidebar: {
 			type: Boolean,
 			default: false,
 		},
-	},
 
-	data() {
-		return {
-			mouseover: false,
-		}
+		// True when this video component is used in one to one conversations
+		isOneToOne: {
+			type: Boolean,
+			default: false,
+		},
 	},
 
 	computed: {
@@ -167,15 +176,89 @@ export default {
 			}
 		},
 
+		wasConnectedAtLeastOnce() {
+			return this.model.attributes.connectedAtLeastOnce
+		},
+
+		isConnected() {
+			return this.model.attributes.connectionState === ConnectionState.CONNECTED || this.model.attributes.connectionState === ConnectionState.COMPLETED
+		},
+
+		isLoading() {
+			return !this.isConnected && this.model.attributes.connectionState !== ConnectionState.FAILED_NO_RESTART
+		},
+
+		isDisconnected() {
+			return this.model.attributes.connectionState !== ConnectionState.NEW && this.model.attributes.connectionState !== ConnectionState.CHECKING
+				&& this.model.attributes.connectionState !== ConnectionState.CONNECTED && this.model.attributes.connectionState !== ConnectionState.COMPLETED
+		},
+
+		/**
+		 * Whether the connection to the participant is being tried again.
+		 *
+		 * The initial connection to the participant is excluded.
+		 *
+		 * A "failed" connection state will trigger a reconnection, but that may
+		 * not immediately change the "negotiating" or "connecting" attributes
+		 * (for example, while the new offer requested to the HPB was not
+		 * received yet). Similarly both "negotiating" and "connecting" need to
+		 * be checked, as the negotiation will start before the connection
+		 * attempt is started.
+		 *
+		 * If the negotiation is done while there is still a connection it is
+		 * not regarded as reconnecting, as in that case it is a renegotiation
+		 * to update the current connection.
+		 */
+		isReconnecting() {
+			return this.model.attributes.connectionState === ConnectionState.FAILED
+				|| (!this.model.attributes.initialConnection
+					&& ((this.model.attributes.negotiating && !this.isConnected) || this.model.attributes.connecting))
+		},
+
+		isNoLongerTryingToReconnect() {
+			return this.model.attributes.connectionState === ConnectionState.FAILED_NO_RESTART
+		},
+
+		connectionMessage() {
+			if (!this.wasConnectedAtLeastOnce && this.isNoLongerTryingToReconnect) {
+				return t('spreed', 'Connection could not be established …')
+			}
+
+			if (this.isNoLongerTryingToReconnect) {
+				return t('spreed', 'Connection was lost and could not be re-established …')
+			}
+
+			if (!this.wasConnectedAtLeastOnce && this.isReconnecting) {
+				return t('spreed', 'Connection could not be established. Trying again …')
+			}
+
+			if (this.isReconnecting) {
+				return t('spreed', 'Connection lost. Trying to reconnect …')
+			}
+
+			if (this.isDisconnected) {
+				return t('spreed', 'Connection problems …')
+			}
+
+			return null
+		},
+
 		containerClass() {
 			return {
 				'videoContainer-dummy': this.placeholderForPromoted,
-				'not-connected': !this.placeholderForPromoted && this.model.attributes.connectionState !== ConnectionState.CONNECTED && this.model.attributes.connectionState !== ConnectionState.COMPLETED,
-				'speaking': !this.placeholderForPromoted && this.model.attributes.speaking,
-				'promoted': !this.placeholderForPromoted && this.sharedData.promoted && !this.isGrid,
+				'not-connected': !this.placeholderForPromoted && !this.isConnected,
+				speaking: !this.placeholderForPromoted && this.model.attributes.speaking,
+				promoted: !this.placeholderForPromoted && this.sharedData.promoted && !this.isGrid,
 				'video-container-grid': this.isGrid,
 				'video-container-grid--speaking': this.isSpeaking,
 				'video-container-big': this.isBig,
+				'one-to-one': this.isOneToOne,
+			}
+		},
+
+		videoWrapperClass() {
+			return {
+				'icon-loading': this.isLoading,
 			}
 		},
 
@@ -185,7 +268,7 @@ export default {
 
 		avatarClass() {
 			return {
-				'icon-loading': this.model.attributes.connectionState !== ConnectionState.CONNECTED && this.model.attributes.connectionState !== ConnectionState.COMPLETED && this.model.attributes.connectionState !== ConnectionState.FAILED_NO_RESTART,
+				'icon-loading': this.isLoading,
 			}
 		},
 
@@ -193,6 +276,12 @@ export default {
 			return Object.assign(this.avatarClass, {
 				['avatar-' + this.avatarSize + 'px']: true,
 			})
+		},
+
+		connectionMessageClass() {
+			return {
+				'below-avatar': this.showBackgroundAndAvatar,
+			}
 		},
 
 		firstLetterOfGuestName() {
@@ -204,7 +293,61 @@ export default {
 			return Hex.stringify(SHA1(this.peerId))
 		},
 
+		peerData() {
+			let peerData = this.$store.getters.getPeer(this.$store.getters.getToken(), this.peerId, this.model.attributes.userId)
+			if (!peerData.actorId) {
+				EventBus.$emit('refresh-peer-list')
+				peerData = {
+					actorType: '',
+					actorId: '',
+					displayName: '',
+				}
+			}
+			return peerData
+		},
+
+		participant() {
+			/**
+			 * This only works for logged in users. Guests can not load the data
+			 * via the participant list
+			 */
+			return this.$store.getters.findParticipant(this.$store.getters.getToken(), {
+				sessionId: this.peerId,
+			}) || {}
+		},
+
+		participantUserId() {
+			if (this.model.attributes.userId) {
+				return this.model.attributes.userId
+			}
+
+			// Check data from participant list
+			if (this.participant?.actorType) {
+				if (this.participant?.actorType === ATTENDEE.ACTOR_TYPE.USERS && this.participant?.actorId) {
+					return this.participant.actorId
+				}
+
+				// Not a user
+				return null
+			}
+
+			// Fallback to CallController::getPeers() endpoint
+			if (this.peerData.actorType === ATTENDEE.ACTOR_TYPE.USERS) {
+				return this.peerData.actorId
+			}
+
+			return null
+		},
+
 		participantName() {
+			if (this.model.attributes.name) {
+				return this.model.attributes.name
+			}
+
+			if (this.participant?.displayName) {
+				return this.participant.displayName
+			}
+
 			let participantName = this.model.attributes.name
 
 			// The name is undefined and not shown until a connection is made
@@ -217,6 +360,13 @@ export default {
 				)
 			}
 
+			if (!participantName) {
+				participantName = this.peerData.displayName
+				if (!participantName && this.peerData.actorType === ATTENDEE.ACTOR_TYPE.GUESTS) {
+					participantName = t('spreed', 'Guest')
+				}
+			}
+
 			return participantName
 		},
 
@@ -225,7 +375,7 @@ export default {
 		},
 
 		hasVideo() {
-			return this.model.attributes.videoAvailable && this.sharedData.videoEnabled && (typeof this.model.attributes.stream === 'object')
+			return !this.model.attributes.videoBlocked && this.model.attributes.videoAvailable && this.sharedData.remoteVideoBlocker.isVideoEnabled() && (typeof this.model.attributes.stream === 'object')
 		},
 
 		hasSelectedVideo() {
@@ -310,7 +460,7 @@ export default {
 
 	watch: {
 
-		'model.attributes.stream': function(stream) {
+		'model.attributes.stream'(stream) {
 			this._setStream(stream)
 		},
 
@@ -323,8 +473,14 @@ export default {
 	},
 
 	mounted() {
+		this.sharedData.remoteVideoBlocker.increaseVisibleCounter()
+
 		// Set initial state
 		this._setStream(this.model.attributes.stream)
+	},
+
+	destroyed() {
+		this.sharedData.remoteVideoBlocker.decreaseVisibleCounter()
 	},
 
 	methods: {
@@ -356,34 +512,27 @@ export default {
 				this.$refs.video.style.transform = ''
 			}
 		},
-		showShadow() {
-			if (this.isSelectable) {
-				this.mouseover = true
-			}
-		},
-		hideShadow() {
-			if (this.isSelectable) {
-				this.mouseover = false
-			}
-		},
-
-		handleClickVideo() {
-			this.$emit('click-video')
-		},
 	},
 
 }
 </script>
 
 <style lang="scss" scoped>
+@import '../../../assets/avatar';
+@import '../../../assets/variables';
+@include avatar-mixin(64px);
+@include avatar-mixin(128px);
+
 .forced-white {
 	filter: drop-shadow(1px 1px 4px var(--color-box-shadow));
 }
 
-@import '../../../assets/avatar.scss';
-@import '../../../assets/variables.scss';
-@include avatar-mixin(64px);
-@include avatar-mixin(128px);
+.not-connected {
+	video,
+	.avatar-container {
+		opacity: 0.5;
+	}
+}
 
 .video-container-grid {
 	position: relative;
@@ -392,12 +541,16 @@ export default {
 	overflow: hidden;
 	display: flex;
 	flex-direction: column;
+	border-radius: var(--border-radius-large);
 }
 
 .video-container-big {
 	position: absolute;
-	height: 100%;
-	width: 100%;
+	&.one-to-one {
+		width: calc(100% - 16px);
+		height: calc(100% - 8px);
+	}
+
 }
 
 .avatar-container {
@@ -417,11 +570,20 @@ export default {
 	display: flex;
 	justify-content: center;
 	align-items: center;
+	border-radius: var(--border-radius-large);
 }
 
+.videoWrapper,
 .video {
 	height: 100%;
 	width: 100%;
+	border-radius: var(--border-radius-large);
+}
+
+.videoWrapper.icon-loading:after {
+	height: 60px;
+	width: 60px;
+	margin: -32px 0 0 -32px;
 }
 
 .video--fit {
@@ -434,6 +596,24 @@ export default {
 	object-fit: cover;
 }
 
+.connection-message {
+	width: 100%;
+
+	position: absolute;
+	top: calc(50% + 50px);
+
+	text-align: center;
+
+	z-index: 1;
+
+	color: white;
+	filter: drop-shadow(1px 1px 4px var(--color-box-shadow));
+}
+
+.connection-message.below-avatar {
+	top: calc(50% + 80px);
+}
+
 .speaking-shadow {
 	position: absolute;
 	height: 100%;
@@ -441,6 +621,7 @@ export default {
 	top: 0;
 	left: 0;
 	box-shadow: inset 0 0 0 2px white;
+	border-radius: var(--border-radius-large);
 }
 
 .hover-shadow {
@@ -451,6 +632,7 @@ export default {
 	left: 0;
 	box-shadow: inset 0 0 0 3px white;
 	cursor: pointer;
+	border-radius: var(--border-radius-large);
 }
 
 </style>

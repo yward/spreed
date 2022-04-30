@@ -25,14 +25,16 @@ namespace OCA\Talk\Chat\Command;
 
 use OCA\Talk\Chat\ChatManager;
 use OCA\Talk\Events\CommandEvent;
+use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\Command;
+use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCA\Talk\Service\CommandService;
 use OCP\AppFramework\Db\DoesNotExistException;
 use OCP\Comments\IComment;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\IL10N;
-use OCP\ILogger;
+use Psr\Log\LoggerInterface;
 
 class Executor {
 	public const EVENT_APP_EXECUTE = self::class . '::execApp';
@@ -42,25 +44,20 @@ class Executor {
 	public const PLACEHOLDER_ARGUMENTS = '{ARGUMENTS}';
 	public const PLACEHOLDER_ARGUMENTS_DOUBLEQUOTE_ESCAPED = '{ARGUMENTS_DOUBLEQUOTE_ESCAPED}';
 
-	/** @var IEventDispatcher */
-	protected $dispatcher;
+	protected IEventDispatcher $dispatcher;
 
-	/** @var ShellExecutor */
-	protected $shellExecutor;
+	protected ShellExecutor $shellExecutor;
 
-	/** @var CommandService */
-	protected $commandService;
+	protected CommandService $commandService;
 
-	/** @var ILogger */
-	protected $logger;
+	protected LoggerInterface $logger;
 
-	/** @var IL10N */
-	protected $l;
+	protected IL10N $l;
 
 	public function __construct(IEventDispatcher $dispatcher,
 								ShellExecutor $shellExecutor,
 								CommandService $commandService,
-								ILogger $logger,
+								LoggerInterface $logger,
 								IL10N $l) {
 		$this->dispatcher = $dispatcher;
 		$this->shellExecutor = $shellExecutor;
@@ -69,40 +66,56 @@ class Executor {
 		$this->l = $l;
 	}
 
-	public function exec(Room $room, IComment $message, Command $command, string $arguments): void {
+	public function isCommandAvailableForParticipant(Command $command, Participant $participant): bool {
+		if ($command->getEnabled() === Command::ENABLED_OFF) {
+			return false;
+		}
+
+		if ($command->getEnabled() === Command::ENABLED_MODERATOR && !$participant->hasModeratorPermissions()) {
+			return false;
+		}
+
+		if ($command->getEnabled() === Command::ENABLED_USERS && $participant->isGuest()) {
+			return false;
+		}
+
+		return true;
+	}
+
+	public function exec(Room $room, IComment $message, Command $command, string $arguments, Participant $participant): void {
 		try {
 			$command = $this->commandService->resolveAlias($command);
 		} catch (DoesNotExistException $e) {
-			$user = $message->getActorType() === 'users' ? $message->getActorId() : '';
+			$user = $message->getActorType() === Attendee::ACTOR_USERS ? $message->getActorId() : '';
 			$message->setMessage(json_encode([
 				'user' => $user,
 				'visibility' => $command->getResponse(),
 				'output' => $e->getMessage(),
 			]), ChatManager::MAX_CHAT_LENGTH);
 			$message->setActor('bots', $command->getName());
-			$message->setVerb('command');
+			$message->setVerb(ChatManager::VERB_COMMAND);
 			return;
 		}
 
 		if ($command->getApp() === '' && $command->getCommand() === 'help') {
-			$output = $this->execHelp($room, $message, $arguments);
+			$output = $this->execHelp($room, $message, $arguments, $participant);
 		} elseif ($command->getApp() !== '') {
 			$output = $this->execApp($room, $message, $command, $arguments);
 		} else {
 			$output = $this->execShell($room, $message, $command, $arguments);
 		}
 
-		$user = $message->getActorType() === 'users' ? $message->getActorId() : '';
+		$user = $message->getActorType() === Attendee::ACTOR_USERS ? $message->getActorId() : '';
 		$message->setMessage(json_encode([
 			'user' => $user,
 			'visibility' => $command->getResponse(),
 			'output' => $output,
 		]), ChatManager::MAX_CHAT_LENGTH);
 		$message->setActor('bots', $command->getName());
-		$message->setVerb('command');
+		$message->setVerb(ChatManager::VERB_COMMAND);
 	}
 
-	protected function execHelp(Room $room, IComment $message, string $arguments): string {
+	protected function execHelp(Room $room, IComment $message, string $arguments, Participant $participant): string {
 		if ($arguments !== '' && $arguments !== 'help') {
 			return $this->execHelpSingleCommand($room, $message, $arguments);
 		}
@@ -114,15 +127,17 @@ class Executor {
 			if ($command->getApp() !== '') {
 				$response = $this->execHelpSingleCommand($room, $message, $command->getApp() . ' ' . $command->getCommand());
 			} else {
-				if ($command->getCommand() === 'help' || strpos($command->getScript(),'alias:') !== false) {
+				if ($command->getCommand() === 'help' || strpos($command->getScript(), 'alias:') !== false ||
+						!$this->isCommandAvailableForParticipant($command, $participant)) {
 					continue;
 				}
 				$response = $this->execHelpSingleCommand($room, $message, $command->getCommand());
 			}
 
 			$response = trim($response);
-			if (strpos($response, "\n")) {
-				$tempHelp = substr($response, 0, strpos($response, "\n"));
+			$newLinePosition = strpos($response, "\n");
+			if ($newLinePosition !== false) {
+				$tempHelp = substr($response, 0, $newLinePosition);
 				if ($tempHelp === 'Description:') {
 					$hasHelpSection = strpos($response, "\nHelp:\n");
 					if ($hasHelpSection !== false) {
@@ -187,10 +202,10 @@ class Executor {
 				$command->getScript(),
 				$arguments,
 				$room->getToken(),
-				$message->getActorType() === 'users' ? $message->getActorId() : ''
+				$message->getActorType() === Attendee::ACTOR_USERS ? $message->getActorId() : ''
 			);
 		} catch (\InvalidArgumentException $e) {
-			$this->logger->logException($e);
+			$this->logger->error($e->getMessage(), ['exception' => $e]);
 			return $this->l->t('An error occurred while running the command. Please ask an administrator to check the logs.');
 		}
 	}

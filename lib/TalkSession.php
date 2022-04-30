@@ -26,9 +26,7 @@ namespace OCA\Talk;
 use OCP\ISession;
 
 class TalkSession {
-
-	/** @var ISession */
-	protected $session;
+	protected ISession $session;
 
 	public function __construct(ISession $session) {
 		$this->session = $session;
@@ -131,5 +129,9 @@ class TalkSession {
 		}
 
 		$this->session->set($key, json_encode($values));
+	}
+
+	public function renewSessionId(): void {
+		$this->session->regenerateId(true, true);
 	}
 }

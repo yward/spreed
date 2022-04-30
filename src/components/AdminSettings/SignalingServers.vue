@@ -23,7 +23,7 @@
 <template>
 	<div id="signaling_server" class="videocalls section">
 		<h2>
-			{{ t('spreed', 'Signaling servers') }}
+			{{ t('spreed', 'High-performance backend') }}
 			<span v-if="saved" class="icon icon-checkmark-color" :title="t('spreed', 'Saved')" />
 			<a v-else-if="!loading && showAddServerButton"
 				v-tooltip.auto="t('spreed', 'Add a new server')"
@@ -39,8 +39,7 @@
 			<span v-if="!servers.length">{{ t('spreed', 'Please note that calls with more than 4 participants without external signaling server, participants can experience connectivity issues and cause high load on participating devices.') }}</span>
 		</p>
 
-		<p
-			v-if="!isCacheConfigured"
+		<p v-if="!isCacheConfigured"
 			class="settings-hint warning">
 			{{ t('spreed', 'It is highly recommended to set up a distributed cache when using Nextcloud Talk together with a High Performance Back-end.') }}
 		</p>
@@ -58,14 +57,13 @@
 
 		<ul class="turn-servers">
 			<transition-group name="fade" tag="li">
-				<SignalingServer
-					v-for="(server, index) in servers"
+				<SignalingServer v-for="(server, index) in servers"
 					:key="`server${index}`"
 					:server.sync="servers[index].server"
 					:verify.sync="servers[index].verify"
 					:index="index"
 					:loading="loading"
-					@removeServer="removeServer"
+					@remove-server="removeServer"
 					@update:server="debounceUpdateServers"
 					@update:verify="debounceUpdateServers" />
 			</transition-group>
@@ -109,8 +107,8 @@ export default {
 			hideWarning: false,
 			loading: false,
 			saved: false,
-			isCacheConfigured: loadState('talk', 'has_cache_configured'),
-			isClusteredMode: loadState('talk', 'signaling_mode') === SIGNALING.MODE.CLUSTER_CONVERSATION,
+			isCacheConfigured: loadState('spreed', 'has_cache_configured'),
+			isClusteredMode: loadState('spreed', 'signaling_mode') === SIGNALING.MODE.CLUSTER_CONVERSATION,
 		}
 	},
 
@@ -121,7 +119,7 @@ export default {
 	},
 
 	beforeMount() {
-		const state = loadState('talk', 'signaling_servers')
+		const state = loadState('spreed', 'signaling_servers')
 		this.servers = state.servers
 		this.secret = state.secret
 		this.hideWarning = state.hideWarning

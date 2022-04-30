@@ -27,25 +27,32 @@ use OCA\Talk\Chat\CommentsManager;
 use OCA\Talk\Config;
 use OCA\Talk\Events\SignalingRoomPropertiesEvent;
 use OCA\Talk\Manager;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Model\AttendeeMapper;
+use OCA\Talk\Model\SessionMapper;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
 use OCA\Talk\Signaling\BackendNotifier;
 use OCA\Talk\TalkSession;
 use OCA\Talk\Webinary;
+use OCP\App\IAppManager;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Http\Client\IClientService;
 use OCP\IGroupManager;
 use OCP\IL10N;
-use OCP\ILogger;
+use OCP\IURLGenerator;
 use OCP\IUser;
 use OCP\IUserManager;
 use OCP\Security\IHasher;
 use OCP\Security\ISecureRandom;
 use PHPUnit\Framework\MockObject\MockObject;
+use Psr\Log\LoggerInterface;
+use Test\TestCase;
 
 class CustomBackendNotifier extends BackendNotifier {
-	private $requests = [];
+	private array $requests = [];
 
 	public function getRequests(): array {
 		return $this->requests;
@@ -66,35 +73,28 @@ class CustomBackendNotifier extends BackendNotifier {
 /**
  * @group DB
  */
-class BackendNotifierTest extends \Test\TestCase {
-
-	/** @var Config */
-	private $config;
-	/** @var ISecureRandom */
-	private $secureRandom;
+class BackendNotifierTest extends TestCase {
+	private ?Config $config = null;
+	private ?ISecureRandom $secureRandom = null;
 	/** @var ITimeFactory|MockObject */
 	private $timeFactory;
+	/** @var ParticipantService|MockObject */
+	private $participantService;
 	/** @var \OCA\Talk\Signaling\Manager|MockObject */
 	private $signalingManager;
-	/** @var CustomBackendNotifier */
-	private $controller;
+	/** @var IURLGenerator|MockObject */
+	private $urlGenerator;
+	private ?\OCA\Talk\Tests\php\Signaling\CustomBackendNotifier $controller = null;
 
-	/** @var Manager */
-	private $manager;
+	private ?Manager $manager = null;
 
-	/** @var string */
-	private $userId;
-	/** @var string */
-	private $signalingSecret;
-	/** @var string */
-	private $baseUrl;
+	private ?string $userId = null;
+	private ?string $signalingSecret = null;
+	private ?string $baseUrl = null;
 
-	/** @var Application */
-	protected $app;
-	/** @var BackendNotifier */
-	protected $originalBackendNotifier;
-	/** @var IEventDispatcher */
-	private $dispatcher;
+	protected Application $app;
+	protected BackendNotifier $originalBackendNotifier;
+	private ?IEventDispatcher $dispatcher = null;
 
 	public function setUp(): void {
 		parent::setUp();
@@ -102,6 +102,7 @@ class BackendNotifierTest extends \Test\TestCase {
 		$this->userId = 'testUser';
 		$this->secureRandom = \OC::$server->getSecureRandom();
 		$this->timeFactory = $this->createMock(ITimeFactory::class);
+		$this->urlGenerator = $this->createMock(IURLGenerator::class);
 		$groupManager = $this->createMock(IGroupManager::class);
 		$config = \OC::$server->getConfig();
 		$this->signalingSecret = 'the-signaling-secret';
@@ -115,30 +116,30 @@ class BackendNotifierTest extends \Test\TestCase {
 			],
 		]));
 
+		$this->participantService = \OC::$server->get(ParticipantService::class);
 		$this->signalingManager = $this->createMock(\OCA\Talk\Signaling\Manager::class);
 		$this->signalingManager->expects($this->any())
 			->method('getSignalingServerForConversation')
 			->willReturn(['server' => $this->baseUrl]);
 
-		$this->config = new Config($config, $this->secureRandom, $groupManager, $this->timeFactory);
+		$this->dispatcher = \OC::$server->get(IEventDispatcher::class);
+		$this->config = new Config($config, $this->secureRandom, $groupManager, $this->timeFactory, $this->dispatcher);
 		$this->recreateBackendNotifier();
 
-
-		$this->app = new Application();
-		$this->app->register();
-
-		$this->originalBackendNotifier = $this->app->getContainer()->query(BackendNotifier::class);
-		$this->app->getContainer()->registerService(BackendNotifier::class, function () {
-			return $this->controller;
-		});
+		$this->overwriteService(BackendNotifier::class, $this->controller);
 
 		$dbConnection = \OC::$server->getDatabaseConnection();
-		$this->dispatcher = \OC::$server->query(IEventDispatcher::class);
 		$this->manager = new Manager(
 			$dbConnection,
 			$config,
+			$this->config,
+			\OC::$server->get(IAppManager::class),
+			\OC::$server->get(AttendeeMapper::class),
+			\OC::$server->get(SessionMapper::class),
+			$this->participantService,
 			$this->secureRandom,
 			$this->createMock(IUserManager::class),
+			$groupManager,
 			$this->createMock(CommentsManager::class),
 			$this->createMock(TalkSession::class),
 			$this->dispatcher,
@@ -151,19 +152,19 @@ class BackendNotifierTest extends \Test\TestCase {
 	public function tearDown(): void {
 		$config = \OC::$server->getConfig();
 		$config->deleteAppValue('spreed', 'signaling_servers');
-		$this->app->getContainer()->registerService(BackendNotifier::class, function () {
-			return $this->originalBackendNotifier;
-		});
+		$this->restoreService(BackendNotifier::class);
 		parent::tearDown();
 	}
 
 	private function recreateBackendNotifier() {
 		$this->controller = new CustomBackendNotifier(
 			$this->config,
-			$this->createMock(ILogger::class),
+			$this->createMock(LoggerInterface::class),
 			$this->createMock(IClientService::class),
 			$this->secureRandom,
-			$this->signalingManager
+			$this->signalingManager,
+			$this->participantService,
+			$this->urlGenerator
 		);
 	}
 
@@ -186,18 +187,64 @@ class BackendNotifierTest extends \Test\TestCase {
 		return $body;
 	}
 
-	public function testRoomInvite() {
-		$room = $this->manager->createPublicRoom();
-		$room->addUsers([
-			'userId' => $this->userId,
-		]);
-
+	private function assertMessageWasSent(Room $room, array $message): void {
 		$requests = $this->controller->getRequests();
 		$bodies = array_map(function ($request) use ($room) {
 			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
 		}, $requests);
 
-		$this->assertContains([
+		$bodies = array_filter($bodies, function (array $body) use ($message) {
+			return $body['type'] === $message['type'];
+		});
+
+		$bodies = array_map([$this, 'sortParticipantUsers'], $bodies);
+		$message = $this->sortParticipantUsers($message);
+		$this->assertContainsEquals($message, $bodies, json_encode($bodies, JSON_PRETTY_PRINT));
+	}
+
+	private function assertNoMessageOfTypeWasSent(Room $room, string $messageType): void {
+		$requests = $this->controller->getRequests();
+		$bodies = array_map(function ($request) use ($room) {
+			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
+		}, $requests);
+
+		$bodies = array_filter($bodies, function (array $body) use ($messageType) {
+			return $body['type'] === $messageType;
+		});
+
+		$this->assertEmpty($bodies);
+	}
+
+	private function sortParticipantUsers(array $message): array {
+		if ($message['type'] === 'participants') {
+			usort($message['participants']['users'], static function ($a, $b) {
+				return
+					[$a['userId'] ?? '', $a['participantType'], $a['sessionId'], $a['lastPing']]
+					<=>
+					[$b['userId'] ?? '', $b['participantType'], $b['sessionId'], $b['lastPing']]
+					;
+			});
+		}
+		if ($message['type'] === 'incall') {
+			usort($message['incall']['users'], static function ($a, $b) {
+				return
+					[$a['userId'] ?? '', $a['participantType'], $a['sessionId'], $a['lastPing']]
+					<=>
+					[$b['userId'] ?? '', $b['participantType'], $b['sessionId'], $b['lastPing']]
+					;
+			});
+		}
+		return $message;
+	}
+
+	public function testRoomInvite() {
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$this->participantService->addUsers($room, [[
+			'actorType' => 'users',
+			'actorId' => $this->userId,
+		]]);
+
+		$this->assertMessageWasSent($room, [
 			'type' => 'invite',
 			'invite' => [
 				'userids' => [
@@ -212,30 +259,30 @@ class BackendNotifierTest extends \Test\TestCase {
 					'lobby-state' => Webinary::LOBBY_NONE,
 					'lobby-timer' => null,
 					'read-only' => Room::READ_WRITE,
+					'listable' => Room::LISTABLE_NONE,
 					'active-since' => null,
+					'sip-enabled' => 0,
+					'participant-list' => 'refresh',
 				],
 			],
-		], $bodies);
+		]);
 	}
 
 	public function testRoomDisinvite() {
-		$room = $this->manager->createPublicRoom();
-		$room->addUsers([
-			'userId' => $this->userId,
-		]);
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$this->participantService->addUsers($room, [[
+			'actorType' => 'users',
+			'actorId' => $this->userId,
+		]]);
 		$this->controller->clearRequests();
 		/** @var IUser|MockObject $testUser */
 		$testUser = $this->createMock(IUser::class);
 		$testUser->expects($this->any())
 			->method('getUID')
 			->willReturn($this->userId);
-		$room->removeUser($testUser, Room::PARTICIPANT_REMOVED);
+		$this->participantService->removeUser($room, $testUser, Room::PARTICIPANT_REMOVED);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'disinvite',
 			'disinvite' => [
 				'userids' => [
@@ -249,121 +296,223 @@ class BackendNotifierTest extends \Test\TestCase {
 					'lobby-state' => Webinary::LOBBY_NONE,
 					'lobby-timer' => null,
 					'read-only' => Room::READ_WRITE,
+					'listable' => Room::LISTABLE_NONE,
 					'active-since' => null,
+					'sip-enabled' => 0,
+					'participant-list' => 'refresh',
 				],
 			],
-		], $bodies);
+		]);
+	}
+
+	public function testNoRoomDisinviteOnLeaveOfNormalUser() {
+		/** @var IUser|MockObject $testUser */
+		$testUser = $this->createMock(IUser::class);
+		$testUser->expects($this->any())
+			->method('getUID')
+			->willReturn($this->userId);
+
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$this->participantService->addUsers($room, [[
+			'actorType' => 'users',
+			'actorId' => $this->userId,
+		]]);
+		$participant = $this->participantService->joinRoom($room, $testUser, '');
+		$this->controller->clearRequests();
+		$this->participantService->leaveRoomAsSession($room, $participant);
+
+		$this->assertNoMessageOfTypeWasSent($room, 'disinvite');
+	}
+
+	public function testRoomDisinviteOnLeaveOfSelfJoinedUser() {
+		/** @var IUser|MockObject $testUser */
+		$testUser = $this->createMock(IUser::class);
+		$testUser->expects($this->any())
+			->method('getUID')
+			->willReturn($this->userId);
+
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$participant = $this->participantService->joinRoom($room, $testUser, '');
+		$this->controller->clearRequests();
+		$this->participantService->leaveRoomAsSession($room, $participant);
+
+		$this->assertMessageWasSent($room, [
+			'type' => 'disinvite',
+			'disinvite' => [
+				'userids' => [
+					$this->userId,
+				],
+				'alluserids' => [
+				],
+				'properties' => [
+					'name' => $room->getDisplayName(''),
+					'type' => $room->getType(),
+					'lobby-state' => Webinary::LOBBY_NONE,
+					'lobby-timer' => null,
+					'read-only' => Room::READ_WRITE,
+					'listable' => Room::LISTABLE_NONE,
+					'active-since' => null,
+					'sip-enabled' => 0,
+					'participant-list' => 'refresh',
+				],
+			],
+		]);
+	}
+
+	public function testRoomDisinviteOnLeaveOfGuest() {
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$participant = $this->participantService->joinRoomAsNewGuest($room, '');
+		$this->controller->clearRequests();
+		$this->participantService->leaveRoomAsSession($room, $participant);
+
+		$this->assertMessageWasSent($room, [
+			'type' => 'disinvite',
+			'disinvite' => [
+				'sessionids' => [
+					$participant->getSession()->getSessionId(),
+				],
+				'alluserids' => [
+				],
+				'properties' => [
+					'name' => $room->getDisplayName(''),
+					'type' => $room->getType(),
+					'lobby-state' => Webinary::LOBBY_NONE,
+					'lobby-timer' => null,
+					'read-only' => Room::READ_WRITE,
+					'listable' => Room::LISTABLE_NONE,
+					'active-since' => null,
+					'sip-enabled' => 0,
+					'participant-list' => 'refresh',
+				],
+			],
+		]);
 	}
 
 	public function testRoomNameChanged() {
-		$room = $this->manager->createPublicRoom();
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
 		$room->setName('Test room');
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'update',
 			'update' => [
 				'userids' => [
 				],
 				'properties' => [
 					'name' => $room->getDisplayName(''),
+					'description' => '',
 					'type' => $room->getType(),
 					'lobby-state' => Webinary::LOBBY_NONE,
 					'lobby-timer' => null,
 					'read-only' => Room::READ_WRITE,
+					'listable' => Room::LISTABLE_NONE,
 					'active-since' => null,
+					'sip-enabled' => 0,
 				],
 			],
-		], $bodies);
+		]);
+	}
+
+	public function testRoomDescriptionChanged() {
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$room->setDescription('The description');
+
+		$this->assertMessageWasSent($room, [
+			'type' => 'update',
+			'update' => [
+				'userids' => [
+				],
+				'properties' => [
+					'name' => $room->getDisplayName(''),
+					'description' => 'The description',
+					'type' => $room->getType(),
+					'lobby-state' => Webinary::LOBBY_NONE,
+					'lobby-timer' => null,
+					'read-only' => Room::READ_WRITE,
+					'listable' => Room::LISTABLE_NONE,
+					'active-since' => null,
+					'sip-enabled' => 0,
+				],
+			],
+		]);
 	}
 
 	public function testRoomPasswordChanged() {
-		$room = $this->manager->createPublicRoom();
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
 		$room->setPassword('password');
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'update',
 			'update' => [
 				'userids' => [
 				],
 				'properties' => [
 					'name' => $room->getDisplayName(''),
+					'description' => '',
 					'type' => $room->getType(),
 					'lobby-state' => Webinary::LOBBY_NONE,
 					'lobby-timer' => null,
 					'read-only' => Room::READ_WRITE,
+					'listable' => Room::LISTABLE_NONE,
 					'active-since' => null,
+					'sip-enabled' => 0,
 				],
 			],
-		], $bodies);
+		]);
 	}
 
 	public function testRoomTypeChanged() {
-		$room = $this->manager->createPublicRoom();
-		$room->setType(Room::GROUP_CALL);
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$room->setType(Room::TYPE_GROUP);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'update',
 			'update' => [
 				'userids' => [
 				],
 				'properties' => [
 					'name' => $room->getDisplayName(''),
+					'description' => '',
 					'type' => $room->getType(),
 					'lobby-state' => Webinary::LOBBY_NONE,
 					'lobby-timer' => null,
 					'read-only' => Room::READ_WRITE,
+					'listable' => Room::LISTABLE_NONE,
 					'active-since' => null,
+					'sip-enabled' => 0,
 				],
 			],
-		], $bodies);
+		]);
 	}
 
 	public function testRoomReadOnlyChanged() {
-		$room = $this->manager->createPublicRoom();
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
 		$room->setReadOnly(Room::READ_ONLY);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'update',
 			'update' => [
 				'userids' => [
 				],
 				'properties' => [
 					'name' => $room->getDisplayName(''),
+					'description' => '',
 					'type' => $room->getType(),
 					'lobby-state' => Webinary::LOBBY_NONE,
 					'lobby-timer' => null,
 					'read-only' => Room::READ_ONLY,
+					'listable' => Room::LISTABLE_NONE,
 					'active-since' => null,
+					'sip-enabled' => 0,
 				],
 			],
-		], $bodies);
+		]);
 	}
 
-	public function testRoomLobbyStateChanged() {
-		$room = $this->manager->createPublicRoom();
-		$room->setLobby(Webinary::LOBBY_NON_MODERATORS, null);
+	public function testRoomListableChanged() {
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$room->setListable(Room::LISTABLE_ALL);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'update',
 			'update' => [
 				'userids' => [
@@ -371,51 +520,80 @@ class BackendNotifierTest extends \Test\TestCase {
 				'properties' => [
 					'name' => $room->getDisplayName(''),
 					'type' => $room->getType(),
+					'lobby-state' => Webinary::LOBBY_NONE,
+					'lobby-timer' => null,
+					'read-only' => Room::READ_WRITE,
+					'listable' => Room::LISTABLE_ALL,
+					'active-since' => null,
+					'sip-enabled' => 0,
+					'description' => '',
+				],
+			],
+		]);
+	}
+
+	public function testRoomLobbyStateChanged() {
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$room->setLobby(Webinary::LOBBY_NON_MODERATORS, null);
+
+		$this->assertMessageWasSent($room, [
+			'type' => 'update',
+			'update' => [
+				'userids' => [
+				],
+				'properties' => [
+					'name' => $room->getDisplayName(''),
+					'description' => '',
+					'type' => $room->getType(),
 					'lobby-state' => Webinary::LOBBY_NON_MODERATORS,
 					'lobby-timer' => null,
 					'read-only' => Room::READ_WRITE,
+					'listable' => Room::LISTABLE_NONE,
 					'active-since' => null,
+					'sip-enabled' => 0,
 				],
 			],
-		], $bodies);
+		]);
 	}
 
 	public function testRoomDelete() {
-		$room = $this->manager->createPublicRoom();
-		$room->addUsers([
-			'userId' => $this->userId,
-		]);
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$this->participantService->addUsers($room, [[
+			'actorType' => 'users',
+			'actorId' => $this->userId,
+		]]);
 		$room->deleteRoom();
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'delete',
 			'delete' => [
 				'userids' => [
 					$this->userId,
 				],
 			],
-		], $bodies);
+		]);
 	}
 
 	public function testRoomInCallChanged() {
-		$room = $this->manager->createPublicRoom();
-		$userSession = 'user-session';
-		$room->addUsers([
-			'userId' => $this->userId,
-			'sessionId' => $userSession,
-		]);
-		$participant = $room->getParticipantBySession($userSession);
-		$room->changeInCall($participant, Participant::FLAG_IN_CALL | Participant::FLAG_WITH_AUDIO | Participant::FLAG_WITH_VIDEO);
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$this->participantService->addUsers($room, [[
+			'actorType' => 'users',
+			'actorId' => $this->userId,
+		]]);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		/** @var IUser|MockObject $testUser */
+		$testUser = $this->createMock(IUser::class);
+		$testUser->expects($this->any())
+			->method('getUID')
+			->willReturn($this->userId);
+
+		$participant = $this->participantService->joinRoom($room, $testUser, '');
+		$userSession = $participant->getSession()->getSessionId();
+		$participant = $room->getParticipantBySession($userSession);
+
+		$this->participantService->changeInCall($room, $participant, Participant::FLAG_IN_CALL | Participant::FLAG_WITH_AUDIO | Participant::FLAG_WITH_VIDEO);
+
+		$this->assertMessageWasSent($room, [
 			'type' => 'incall',
 			'incall' => [
 				'incall' => 7,
@@ -424,7 +602,9 @@ class BackendNotifierTest extends \Test\TestCase {
 						'inCall' => 7,
 						'lastPing' => 0,
 						'sessionId' => $userSession,
+						'nextcloudSessionId' => $userSession,
 						'participantType' => Participant::USER,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 						'userId' => $this->userId,
 					],
 				],
@@ -433,23 +613,23 @@ class BackendNotifierTest extends \Test\TestCase {
 						'inCall' => 7,
 						'lastPing' => 0,
 						'sessionId' => $userSession,
+						'nextcloudSessionId' => $userSession,
 						'participantType' => Participant::USER,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 						'userId' => $this->userId,
 					],
 				],
 			],
-		], $bodies);
+		]);
 
 		$this->controller->clearRequests();
-		$guestSession = $room->joinRoomGuest('');
-		$guestParticipant = $room->getParticipantBySession($guestSession);
-		$room->changeInCall($guestParticipant, Participant::FLAG_IN_CALL);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$guestParticipant = $this->participantService->joinRoomAsNewGuest($room, '');
+		$guestSession = $guestParticipant->getSession()->getSessionId();
+		$guestParticipant = $room->getParticipantBySession($guestSession);
+		$this->participantService->changeInCall($room, $guestParticipant, Participant::FLAG_IN_CALL);
+
+		$this->assertMessageWasSent($room, [
 			'type' => 'incall',
 			'incall' => [
 				'incall' => 1,
@@ -458,7 +638,9 @@ class BackendNotifierTest extends \Test\TestCase {
 						'inCall' => 1,
 						'lastPing' => 0,
 						'sessionId' => $guestSession,
+						'nextcloudSessionId' => $guestSession,
 						'participantType' => Participant::GUEST,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 					],
 				],
 				'users' => [
@@ -466,27 +648,27 @@ class BackendNotifierTest extends \Test\TestCase {
 						'inCall' => 7,
 						'lastPing' => 0,
 						'sessionId' => $userSession,
+						'nextcloudSessionId' => $userSession,
 						'participantType' => Participant::USER,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 						'userId' => $this->userId,
 					],
 					[
 						'inCall' => 1,
 						'lastPing' => 0,
 						'sessionId' => $guestSession,
+						'nextcloudSessionId' => $guestSession,
 						'participantType' => Participant::GUEST,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 					],
 				],
 			],
-		], $bodies);
+		]);
 
 		$this->controller->clearRequests();
-		$room->changeInCall($participant, Participant::FLAG_DISCONNECTED);
+		$this->participantService->changeInCall($room, $participant, Participant::FLAG_DISCONNECTED);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'incall',
 			'incall' => [
 				'incall' => 0,
@@ -495,7 +677,9 @@ class BackendNotifierTest extends \Test\TestCase {
 						'inCall' => 0,
 						'lastPing' => 0,
 						'sessionId' => $userSession,
+						'nextcloudSessionId' => $userSession,
 						'participantType' => Participant::USER,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 						'userId' => $this->userId,
 					],
 				],
@@ -504,11 +688,13 @@ class BackendNotifierTest extends \Test\TestCase {
 						'inCall' => 1,
 						'lastPing' => 0,
 						'sessionId' => $guestSession,
+						'nextcloudSessionId' => $guestSession,
 						'participantType' => Participant::GUEST,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 					],
 				],
 			],
-		], $bodies);
+		]);
 	}
 
 	public function testRoomPropertiesEvent(): void {
@@ -520,58 +706,62 @@ class BackendNotifierTest extends \Test\TestCase {
 
 		$this->dispatcher->addListener(Room::EVENT_BEFORE_SIGNALING_PROPERTIES, $listener);
 
-		$room = $this->manager->createPublicRoom();
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
 		$this->controller->clearRequests();
 		$room->setName('Test room');
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'update',
 			'update' => [
 				'userids' => [
 				],
 				'properties' => [
 					'name' => $room->getDisplayName(''),
+					'description' => '',
 					'type' => $room->getType(),
 					'lobby-state' => Webinary::LOBBY_NONE,
 					'lobby-timer' => null,
 					'read-only' => Room::READ_WRITE,
+					'listable' => Room::LISTABLE_NONE,
 					'active-since' => null,
+					'sip-enabled' => 0,
 					'foo' => 'bar',
 					'room' => $room->getToken(),
 				],
 			],
-		], $bodies);
+		]);
 	}
 
 	public function testParticipantsTypeChanged() {
-		$room = $this->manager->createPublicRoom();
-		$userSession = 'user-session';
-		$room->addUsers([
-			'userId' => $this->userId,
-			'sessionId' => $userSession,
-		]);
-		$participant = $room->getParticipantBySession($userSession);
-		$room->setParticipantType($participant, Participant::MODERATOR);
+		$room = $this->manager->createRoom(Room::TYPE_PUBLIC);
+		$this->participantService->addUsers($room, [[
+			'actorType' => 'users',
+			'actorId' => $this->userId,
+		]]);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		/** @var IUser|MockObject $testUser */
+		$testUser = $this->createMock(IUser::class);
+		$testUser->expects($this->any())
+			->method('getUID')
+			->willReturn($this->userId);
+
+		$participant = $this->participantService->joinRoom($room, $testUser, '');
+		$userSession = $participant->getSession()->getSessionId();
+		$participant = $room->getParticipantBySession($userSession);
+
+		$this->participantService->updateParticipantType($room, $participant, Participant::MODERATOR);
+
+		$this->assertMessageWasSent($room, [
 			'type' => 'participants',
 			'participants' => [
 				'changed' => [
 					[
-						'permissions' => ['publish-media', 'publish-screen', 'control'],
+						'permissions' => ['publish-audio', 'publish-video', 'publish-screen', 'control'],
 						'inCall' => 0,
 						'lastPing' => 0,
 						'sessionId' => $userSession,
 						'participantType' => Participant::MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_MAX_DEFAULT,
 						'userId' => $this->userId,
 					],
 				],
@@ -581,31 +771,32 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => $userSession,
 						'participantType' => Participant::MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_MAX_DEFAULT,
 						'userId' => $this->userId,
 					],
 				],
 			],
-		], $bodies);
+		]);
 
 		$this->controller->clearRequests();
-		$guestSession = $room->joinRoomGuest('');
-		$guestParticipant = $room->getParticipantBySession($guestSession);
-		$room->setParticipantType($guestParticipant, Participant::GUEST_MODERATOR);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$guestParticipant = $this->participantService->joinRoomAsNewGuest($room, '');
+		$guestSession = $guestParticipant->getSession()->getSessionId();
+		$guestParticipant = $room->getParticipantBySession($guestSession);
+
+		$this->participantService->updateParticipantType($room, $guestParticipant, Participant::GUEST_MODERATOR);
+
+		$this->assertMessageWasSent($room, [
 			'type' => 'participants',
 			'participants' => [
 				'changed' => [
 					[
-						'permissions' => ['publish-media', 'publish-screen'],
+						'permissions' => ['publish-audio', 'publish-video', 'publish-screen'],
 						'inCall' => 0,
 						'lastPing' => 0,
 						'sessionId' => $guestSession,
 						'participantType' => Participant::GUEST_MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_MAX_DEFAULT,
 					],
 				],
 				'users' => [
@@ -614,6 +805,7 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => $userSession,
 						'participantType' => Participant::MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_MAX_DEFAULT,
 						'userId' => $this->userId,
 					],
 					[
@@ -621,24 +813,23 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => $guestSession,
 						'participantType' => Participant::GUEST_MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_MAX_DEFAULT,
 					],
 				],
 			],
-		], $bodies);
+		]);
 
 		$this->controller->clearRequests();
 		$notJoinedUserId = 'not-joined-user-id';
-		$room->addUsers([
-			'userId' => $notJoinedUserId,
-		]);
+		$this->participantService->addUsers($room, [[
+			'actorType' => 'users',
+			'actorId' => $notJoinedUserId,
+		]]);
+
 		$notJoinedParticipant = $room->getParticipant($notJoinedUserId);
-		$room->setParticipantType($notJoinedParticipant, Participant::MODERATOR);
+		$this->participantService->updateParticipantType($room, $notJoinedParticipant, Participant::MODERATOR);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'participants',
 			'participants' => [
 				'changed' => [
@@ -649,6 +840,7 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => $userSession,
 						'participantType' => Participant::MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_MAX_DEFAULT,
 						'userId' => $this->userId,
 					],
 					[
@@ -656,6 +848,7 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => 0,
 						'participantType' => Participant::MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_CUSTOM,
 						'userId' => $notJoinedUserId,
 					],
 					[
@@ -663,28 +856,26 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => $guestSession,
 						'participantType' => Participant::GUEST_MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_MAX_DEFAULT,
 					],
 				],
 			],
-		], $bodies);
+		]);
 
 		$this->controller->clearRequests();
-		$room->setParticipantType($participant, Participant::USER);
+		$this->participantService->updateParticipantType($room, $participant, Participant::USER);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'participants',
 			'participants' => [
 				'changed' => [
 					[
-						'permissions' => ['publish-media', 'publish-screen'],
+						'permissions' => ['publish-audio', 'publish-video', 'publish-screen'],
 						'inCall' => 0,
 						'lastPing' => 0,
 						'sessionId' => $userSession,
 						'participantType' => Participant::USER,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 						'userId' => $this->userId,
 					],
 				],
@@ -694,6 +885,7 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => $userSession,
 						'participantType' => Participant::USER,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 						'userId' => $this->userId,
 					],
 					[
@@ -701,6 +893,7 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => 0,
 						'participantType' => Participant::MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_CUSTOM,
 						'userId' => $notJoinedUserId,
 					],
 					[
@@ -708,28 +901,26 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => $guestSession,
 						'participantType' => Participant::GUEST_MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_MAX_DEFAULT,
 					],
 				],
 			],
-		], $bodies);
+		]);
 
 		$this->controller->clearRequests();
-		$room->setParticipantType($guestParticipant, Participant::GUEST);
+		$this->participantService->updateParticipantType($room, $guestParticipant, Participant::GUEST);
 
-		$requests = $this->controller->getRequests();
-		$bodies = array_map(function ($request) use ($room) {
-			return json_decode($this->validateBackendRequest($this->baseUrl . '/api/v1/room/' . $room->getToken(), $request), true);
-		}, $requests);
-		$this->assertContains([
+		$this->assertMessageWasSent($room, [
 			'type' => 'participants',
 			'participants' => [
 				'changed' => [
 					[
-						'permissions' => ['publish-media', 'publish-screen'],
+						'permissions' => ['publish-audio', 'publish-video', 'publish-screen'],
 						'inCall' => 0,
 						'lastPing' => 0,
 						'sessionId' => $guestSession,
 						'participantType' => Participant::GUEST,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 					],
 				],
 				'users' => [
@@ -738,6 +929,7 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => $userSession,
 						'participantType' => Participant::USER,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 						'userId' => $this->userId,
 					],
 					[
@@ -745,6 +937,7 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => 0,
 						'participantType' => Participant::MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_CUSTOM,
 						'userId' => $notJoinedUserId,
 					],
 					[
@@ -752,9 +945,54 @@ class BackendNotifierTest extends \Test\TestCase {
 						'lastPing' => 0,
 						'sessionId' => $guestSession,
 						'participantType' => Participant::GUEST,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
 					],
 				],
 			],
-		], $bodies);
+		]);
+
+		$this->controller->clearRequests();
+		$this->participantService->updatePermissions($room, $guestParticipant, Attendee::PERMISSIONS_MODIFY_SET, Attendee::PERMISSIONS_CUSTOM);
+
+		$this->assertMessageWasSent($room, [
+			'type' => 'participants',
+			'participants' => [
+				'changed' => [
+					[
+						'permissions' => [],
+						'inCall' => 0,
+						'lastPing' => 0,
+						'sessionId' => $guestSession,
+						'participantType' => Participant::GUEST,
+						'participantPermissions' => Attendee::PERMISSIONS_CUSTOM,
+					],
+				],
+				'users' => [
+					[
+						'inCall' => 0,
+						'lastPing' => 0,
+						'sessionId' => $userSession,
+						'participantType' => Participant::USER,
+						'participantPermissions' => (Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_LOBBY_IGNORE),
+						'userId' => $this->userId,
+					],
+					[
+						'inCall' => 0,
+						'lastPing' => 0,
+						'sessionId' => 0,
+						'participantType' => Participant::MODERATOR,
+						'participantPermissions' => Attendee::PERMISSIONS_CUSTOM,
+						'userId' => $notJoinedUserId,
+					],
+					[
+						'inCall' => 0,
+						'lastPing' => 0,
+						'sessionId' => $guestSession,
+						'participantType' => Participant::GUEST,
+						'participantPermissions' => Attendee::PERMISSIONS_CUSTOM,
+					],
+				],
+			],
+		]);
 	}
 }

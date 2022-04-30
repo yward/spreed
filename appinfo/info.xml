@@ -8,7 +8,7 @@
 
 * 💬 **Chat integration!** Nextcloud Talk comes with a simple text chat. Allowing you to share files from your Nextcloud and mentioning other participants.
 * 👥 **Private, group, public and password protected calls!** Just invite somebody, a whole group or send a public link to invite to a call.
-* 💻 **Screen sharing!** Share your screen with participants of your call. You just need to use Firefox version 52 (or newer), latest Edge or Chrome 49 (or newer) with this [Chrome extension](https://chrome.google.com/webstore/detail/screensharing-for-nextclo/kepnpjhambipllfmgmbapncekcmabkol).
+* 💻 **Screen sharing!** Share your screen with participants of your call. You just need to use Firefox version 66 (or newer), latest Edge or Chrome 72 (or newer, also possible using Chrome 49 with this [Chrome extension](https://chrome.google.com/webstore/detail/screensharing-for-nextclo/kepnpjhambipllfmgmbapncekcmabkol)).
 * 🚀 **Integration with other Nextcloud apps** like Files, Contacts and Deck. More to come.
 
 And in the works for the [coming versions](https://github.com/nextcloud/spreed/milestones/):
@@ -16,19 +16,24 @@ And in the works for the [coming versions](https://github.com/nextcloud/spreed/m
 
 	]]></description>
 
-	<version>10.0.0-dev.2</version>
+	<version>15.0.0-dev.3</version>
 	<licence>agpl</licence>
 
+	<author>Aleksandra Lazarević</author>
 	<author>Daniel Calviño Sánchez</author>
 	<author>Ivan Sein</author>
 	<author>Jan-Christoph Borchardt</author>
-	<author>Jennifer Piperek</author>
 	<author>Joas Schilling</author>
+	<author>Marcel Hibbe</author>
 	<author>Marco Ambrosini</author>
+	<author>Nikola Gladovic</author>
+	<author>Tim Krüger</author>
+	<author>Vitor Mattos</author>
 
 	<namespace>Talk</namespace>
 
 	<types>
+		<dav />
 		<prevent_group_restriction />
 	</types>
 
@@ -40,14 +45,14 @@ And in the works for the [coming versions](https://github.com/nextcloud/spreed/m
 	<bugs>https://github.com/nextcloud/spreed/issues</bugs>
 	<repository>https://github.com/nextcloud/spreed.git</repository>
 
-	<screenshot>https://raw.githubusercontent.com/nextcloud/spreed/master/docs/call-in-action.png</screenshot>
+	<screenshot>https://raw.githubusercontent.com/nextcloud/spreed/master/docs/call-in-action.jpg</screenshot>
 	<screenshot>https://raw.githubusercontent.com/nextcloud/spreed/master/docs/chat.png</screenshot>
 	<screenshot>https://raw.githubusercontent.com/nextcloud/spreed/master/docs/file-darg-and-drop.png</screenshot>
 	<screenshot>https://raw.githubusercontent.com/nextcloud/spreed/master/docs/screensharing.png</screenshot>
 	<screenshot>https://raw.githubusercontent.com/nextcloud/spreed/master/docs/video-verfication.png</screenshot>
 
 	<dependencies>
-		<nextcloud min-version="20" max-version="20" />
+		<nextcloud min-version="25" max-version="25" />
 	</dependencies>
 
 	<background-jobs>
@@ -55,6 +60,8 @@ And in the works for the [coming versions](https://github.com/nextcloud/spreed/m
 		<job>OCA\Talk\BackgroundJob\RemoveEmptyRooms</job>
 		<job>OCA\Talk\BackgroundJob\ResetAssignedSignalingServer</job>
 		<job>OCA\Talk\BackgroundJob\CheckReferenceIdColumn</job>
+		<job>OCA\Talk\BackgroundJob\CheckHostedSignalingServer</job>
+		<job>OCA\Talk\BackgroundJob\CheckMatterbridges</job>
 	</background-jobs>
 
 	<repair-steps>
@@ -64,6 +71,7 @@ And in the works for the [coming versions](https://github.com/nextcloud/spreed/m
 		<post-migration>
 			<step>OCA\Talk\Migration\CreateHelpCommand</step>
 			<step>OCA\Talk\Migration\ClearResourceAccessCache</step>
+			<step>OCA\Talk\Migration\CacheUserDisplayNames</step>
 		</post-migration>
 		<install>
 			<step>OCA\Talk\Migration\CreateHelpCommand</step>
@@ -93,6 +101,7 @@ And in the works for the [coming versions](https://github.com/nextcloud/spreed/m
 		<command>OCA\Talk\Command\Room\Promote</command>
 		<command>OCA\Talk\Command\Room\Demote</command>
 		<command>OCA\Talk\Command\Room\Update</command>
+		<command>OCA\Talk\Command\User\Remove</command>
 	</commands>
 
 	<settings>

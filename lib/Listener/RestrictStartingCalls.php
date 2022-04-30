@@ -26,35 +26,42 @@ namespace OCA\Talk\Listener;
 use OCA\Talk\Events\ModifyParticipantEvent;
 use OCA\Talk\Exceptions\ForbiddenException;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
 use OCP\EventDispatcher\IEventDispatcher;
 use OCP\IConfig;
 
 class RestrictStartingCalls {
+	protected IConfig $config;
 
-	/** @var IConfig */
-	protected $config;
+	protected ParticipantService $participantService;
 
-	public function __construct(IConfig $config) {
+	public function __construct(IConfig $config,
+								ParticipantService $participantService) {
 		$this->config = $config;
+		$this->participantService = $participantService;
 	}
 
 	public static function register(IEventDispatcher $dispatcher): void {
-		$dispatcher->addListener(Room::EVENT_BEFORE_SESSION_JOIN_CALL, static function (ModifyParticipantEvent $event) {
-			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
-			$listener->checkStartCallPermissions($event);
-		}, 1000);
+		$dispatcher->addListener(Room::EVENT_BEFORE_SESSION_JOIN_CALL, [self::class, 'checkStartCallPermissions'], 1000);
 	}
 
 	/**
 	 * @param ModifyParticipantEvent $event
 	 * @throws ForbiddenException
 	 */
-	public function checkStartCallPermissions(ModifyParticipantEvent $event): void {
+	public static function checkStartCallPermissions(ModifyParticipantEvent $event): void {
+		/** @var self $listener */
+		$listener = \OC::$server->get(self::class);
 		$room = $event->getRoom();
 		$participant = $event->getParticipant();
 
-		if (!$participant->canStartCall() && !$room->hasSessionsInCall()) {
+		if ($room->getType() === Room::TYPE_PUBLIC
+			&& $room->getObjectType() === 'share:password') {
+			// Always allow guests to start calls in password-request calls
+			return;
+		}
+
+		if (!$participant->canStartCall($listener->config) && !$listener->participantService->hasActiveSessionsInCall($room)) {
 			throw new ForbiddenException('Can not start a call');
 		}
 	}

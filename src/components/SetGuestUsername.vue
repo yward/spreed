@@ -21,42 +21,52 @@
 
 <template>
 	<!-- Guest username setting form -->
-	<form
-		class="username-form"
+	<form class="username-form"
 		@submit.prevent="handleChooseUserName">
-		<h3>
-			{{ t('spreed', 'Display name: ') }} <strong>{{ actorDisplayName ? actorDisplayName : t('spreed', 'Guest') }}</strong>
-			<button
-				class="icon-rename"
-				@click.prevent="handleEditUsername">
-				{{ t('spreed', 'Edit') }}
-			</button>
-		</h3>
-		<div
-			v-if="isEditingUsername"
+		<!-- eslint-disable-next-line vue/no-v-html -->
+		<h3 v-html="displayNameLabel" />
+		<Button @click.prevent="handleEditUsername">
+			{{ t('spreed', 'Edit') }}
+			<template #icon>
+				<Pencil :size="20"
+					title=""
+					decorative />
+			</template>
+		</Button>
+		<div v-if="isEditingUsername"
 			class="username-form__wrapper">
-			<input
-				ref="usernameInput"
+			<input ref="usernameInput"
 				v-model="guestUserName"
 				:placeholder="t('spreed', 'Guest')"
 				class="username-form__input"
 				type="text"
 				@keydown.enter="handleChooseUserName"
 				@keydown.esc="isEditingUsername = !isEditingUsername">
-			<button
-				class="username-form__button"
-				type="submit">
-				<div class="icon-confirm" />
-			</button>
+			<Button class="username-form__button"
+				native-type="submit"
+				type="tertiary">
+				<ArrowRight :size="20"
+					title=""
+					decorative />
+			</Button>
 		</div>
 	</form>
 </template>
 
 <script>
 import { setGuestUserName } from '../services/participantsService'
+import Button from '@nextcloud/vue/dist/Components/Button'
+import Pencil from 'vue-material-design-icons/Pencil'
+import ArrowRight from 'vue-material-design-icons/ArrowRight.vue'
 
 export default {
 	name: 'SetGuestUsername',
+
+	components: {
+		Button,
+		Pencil,
+		ArrowRight,
+	},
 
 	data() {
 		return {
@@ -69,6 +79,11 @@ export default {
 	computed: {
 		actorDisplayName() {
 			return this.$store.getters.getDisplayName()
+		},
+		displayNameLabel() {
+			return t('spreed', 'Display name: <strong>{name}</strong>', {
+				name: this.actorDisplayName ? this.actorDisplayName : t('spreed', 'Guest'),
+			})
 		},
 		actorId() {
 			return this.$store.getters.getActorId()
@@ -111,7 +126,7 @@ export default {
 				this.$store.dispatch('setDisplayName', this.guestUserName)
 				this.$store.dispatch('forceGuestName', {
 					token: this.token,
-					actorId: this.$store.getters.getActorId().substring(6),
+					actorId: this.$store.getters.getActorId(),
 					actorDisplayName: this.guestUserName,
 				})
 				await setGuestUserName(this.token, this.guestUserName)
@@ -125,7 +140,7 @@ export default {
 				this.$store.dispatch('setDisplayName', previousName)
 				this.$store.dispatch('forceGuestName', {
 					token: this.token,
-					actorId: this.$store.getters.getActorId().substring(6),
+					actorId: this.$store.getters.getActorId(),
 					actorDisplayName: previousName,
 				})
 				console.debug(exception)
@@ -151,22 +166,16 @@ export default {
 .username-form {
 	padding: 0 12px;
 	margin:auto;
-	& .icon-rename {
-		margin-left: 8px;
-		padding-left: 36px;
-		background-position: 12px;
-	}
 	&__wrapper {
 		display: flex;
+		margin-top: 16px;
 	}
 	&__input {
 		padding-right: var(--clickable-area);
 		width: 230px;
 	}
 	&__button {
-		margin-left: -44px;
-		background-color: transparent;
-		border: none;
+		margin-left: -52px;
 	}
 }
 

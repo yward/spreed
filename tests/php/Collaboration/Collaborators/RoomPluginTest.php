@@ -27,29 +27,26 @@ namespace OCA\Talk\Tests\php\Collaboration\Collaborators;
 
 use OCA\Talk\Collaboration\Collaborators\RoomPlugin;
 use OCA\Talk\Manager;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCP\Collaboration\Collaborators\ISearchResult;
 use OCP\Collaboration\Collaborators\SearchResultType;
 use OCP\IUser;
 use OCP\IUserSession;
 use OCP\Share\IShare;
+use Test\TestCase;
 
-class RoomPluginTest extends \Test\TestCase {
+class RoomPluginTest extends TestCase {
+	protected ?Manager $manager = null;
 
-	/** @var Manager */
-	protected $manager;
+	protected ?IUserSession $userSession = null;
 
-	/** @var IUserSession */
-	protected $userSession;
+	protected ?IUser $user = null;
 
-	/** @var IUser */
-	protected $user;
+	protected ?ISearchResult $searchResult = null;
 
-	/** @var ISearchResult */
-	protected $searchResult;
-
-	/** @var RoomPlugin */
-	protected $plugin;
+	protected ?RoomPlugin $plugin = null;
 
 	public function setUp(): void {
 		parent::setUp();
@@ -70,8 +67,9 @@ class RoomPluginTest extends \Test\TestCase {
 		$this->plugin = new RoomPlugin($this->manager, $this->userSession);
 	}
 
-	private function newRoom(int $type, string $token, string $name): Room {
+	private function newRoom(int $type, string $token, string $name, int $permissions = Attendee::PERMISSIONS_MAX_DEFAULT): Room {
 		$room = $this->createMock(Room::class);
+		$participant = $this->createMock(Participant::class);
 
 		$room->expects($this->any())
 			->method('getType')
@@ -84,6 +82,14 @@ class RoomPluginTest extends \Test\TestCase {
 		$room->expects($this->any())
 			->method('getDisplayName')
 			->willReturn($name);
+
+		$room->expects($this->any())
+			->method('getParticipant')
+			->willReturn($participant);
+
+		$participant->expects($this->any())
+			->method('getPermissions')
+			->willReturn($permissions);
 
 		return $room;
 	}
@@ -105,34 +111,39 @@ class RoomPluginTest extends \Test\TestCase {
 
 			// Empty search term with rooms
 			['', 2, 0, [
-				$this->newRoom(Room::GROUP_CALL, 'roomToken', 'Room name')
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken', 'Room name')
 			], [], [], false],
 
 			// Search term with no matches
 			['Unmatched search term', 2, 0, [
-				$this->newRoom(Room::GROUP_CALL, 'roomToken', 'Unmatched name')
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken', 'Unmatched name')
 			], [], [], false],
 
 			// Search term with single wide match
 			['room', 2, 0, [
-				$this->newRoom(Room::GROUP_CALL, 'roomToken', 'Room name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken2', 'Unmatched name')
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken', 'Room name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken2', 'Unmatched name')
 			], [], [
 				$this->newResult('Room name', 'roomToken')
 			], false],
 
+			// Chats without chat permission are not returned
+			['room', 2, 0, [
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken', 'Room name', Attendee::PERMISSIONS_MAX_DEFAULT ^ Attendee::PERMISSIONS_CHAT),
+			], [], [], false],
+
 			// Search term with single exact match
 			['room name', 2, 0, [
-				$this->newRoom(Room::GROUP_CALL, 'roomToken', 'Unmatched name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken2', 'Room name')
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken', 'Unmatched name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken2', 'Room name')
 			], [
 				$this->newResult('Room name', 'roomToken2')
 			], [], false],
 
 			// Search term with single exact match and single wide match
 			['room name', 2, 0, [
-				$this->newRoom(Room::GROUP_CALL, 'roomToken', 'Room name that also matches'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken2', 'Room name')
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken', 'Room name that also matches'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken2', 'Room name')
 			], [
 				$this->newResult('Room name', 'roomToken2')
 			], [
@@ -143,8 +154,8 @@ class RoomPluginTest extends \Test\TestCase {
 			// as one-to-one rooms do not have a name, but it would be if they
 			// had, so it is included here for completeness).
 			['room name', 2, 0, [
-				$this->newRoom(Room::ONE_TO_ONE_CALL, 'roomToken', 'Room name that also matches'),
-				$this->newRoom(Room::ONE_TO_ONE_CALL, 'roomToken2', 'Room name')
+				$this->newRoom(Room::TYPE_ONE_TO_ONE, 'roomToken', 'Room name that also matches'),
+				$this->newRoom(Room::TYPE_ONE_TO_ONE, 'roomToken2', 'Room name')
 			], [
 				$this->newResult('Room name', 'roomToken2')
 			], [
@@ -153,8 +164,8 @@ class RoomPluginTest extends \Test\TestCase {
 
 			// Search term matching public rooms
 			['room name', 2, 0, [
-				$this->newRoom(Room::PUBLIC_CALL, 'roomToken', 'Room name that also matches'),
-				$this->newRoom(Room::PUBLIC_CALL, 'roomToken2', 'Room name')
+				$this->newRoom(Room::TYPE_PUBLIC, 'roomToken', 'Room name that also matches'),
+				$this->newRoom(Room::TYPE_PUBLIC, 'roomToken2', 'Room name')
 			], [
 				$this->newResult('Room name', 'roomToken2')
 			], [
@@ -163,10 +174,10 @@ class RoomPluginTest extends \Test\TestCase {
 
 			// Search term with several wide matches
 			['room', 2, 0, [
-				$this->newRoom(Room::GROUP_CALL, 'roomToken', 'Room name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken2', 'Another room name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken3', 'Room name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken4', 'Another room name')
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken', 'Room name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken2', 'Another room name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken3', 'Room name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken4', 'Another room name')
 			], [], [
 				$this->newResult('Room name', 'roomToken'),
 				$this->newResult('Another room name', 'roomToken2'),
@@ -176,10 +187,10 @@ class RoomPluginTest extends \Test\TestCase {
 
 			// Search term with several exact matches
 			['room name', 2, 0, [
-				$this->newRoom(Room::GROUP_CALL, 'roomToken', 'Room name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken2', 'Room name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken3', 'Room name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken4', 'Room name')
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken', 'Room name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken2', 'Room name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken3', 'Room name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken4', 'Room name')
 			], [
 				$this->newResult('Room name', 'roomToken'),
 				$this->newResult('Room name', 'roomToken2'),
@@ -189,17 +200,17 @@ class RoomPluginTest extends \Test\TestCase {
 
 			// Search term with several matches
 			['room name', 2, 0, [
-				$this->newRoom(Room::GROUP_CALL, 'roomToken', 'Room name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken2', 'Unmatched name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken3', 'Another room name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken4', 'Room name'),
-				$this->newRoom(Room::ONE_TO_ONE_CALL, 'roomToken5', 'Room name'),
-				$this->newRoom(Room::PUBLIC_CALL, 'roomToken6', 'Room name'),
-				$this->newRoom(Room::GROUP_CALL, 'roomToken7', 'Another unmatched name'),
-				$this->newRoom(Room::ONE_TO_ONE_CALL, 'roomToken8', 'Another unmatched name'),
-				$this->newRoom(Room::PUBLIC_CALL, 'roomToken9', 'Another unmatched name'),
-				$this->newRoom(Room::ONE_TO_ONE_CALL, 'roomToken10', 'Another room name'),
-				$this->newRoom(Room::PUBLIC_CALL, 'roomToken11', 'Another room name')
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken', 'Room name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken2', 'Unmatched name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken3', 'Another room name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken4', 'Room name'),
+				$this->newRoom(Room::TYPE_ONE_TO_ONE, 'roomToken5', 'Room name'),
+				$this->newRoom(Room::TYPE_PUBLIC, 'roomToken6', 'Room name'),
+				$this->newRoom(Room::TYPE_GROUP, 'roomToken7', 'Another unmatched name'),
+				$this->newRoom(Room::TYPE_ONE_TO_ONE, 'roomToken8', 'Another unmatched name'),
+				$this->newRoom(Room::TYPE_PUBLIC, 'roomToken9', 'Another unmatched name'),
+				$this->newRoom(Room::TYPE_ONE_TO_ONE, 'roomToken10', 'Another room name'),
+				$this->newRoom(Room::TYPE_PUBLIC, 'roomToken11', 'Another room name')
 			], [
 				$this->newResult('Room name', 'roomToken'),
 				$this->newResult('Room name', 'roomToken4'),
@@ -234,7 +245,7 @@ class RoomPluginTest extends \Test\TestCase {
 		bool $expectedHasMoreResults
 	) {
 		$this->manager->expects($this->any())
-			->method('getRoomsForParticipant')
+			->method('getRoomsForUser')
 			->with('user0')
 			->willReturn($roomsForParticipant);
 

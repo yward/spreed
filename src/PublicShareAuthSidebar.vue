@@ -28,8 +28,10 @@
 				<h2>{{ t('spreed', 'This conversation has ended') }}</h2>
 			</div>
 			<template v-else>
+				<TopBar :is-in-call="true"
+					:is-sidebar="true" />
 				<CallView :token="token" :is-sidebar="true" />
-				<ChatView :token="token" />
+				<ChatView />
 			</template>
 		</aside>
 	</transition>
@@ -40,15 +42,13 @@ import { getCurrentUser } from '@nextcloud/auth'
 import { loadState } from '@nextcloud/initial-state'
 import CallView from './components/CallView/CallView'
 import ChatView from './components/ChatView'
-import { PARTICIPANT } from './constants'
+import TopBar from './components/TopBar/TopBar'
 import { EventBus } from './services/EventBus'
-import { fetchConversation } from './services/conversationsService'
 import {
-	joinConversation,
 	leaveConversationSync,
 } from './services/participantsService'
 import { signalingKill } from './utils/webrtc/index'
-import browserCheck from './mixins/browserCheck'
+import sessionIssueHandler from './mixins/sessionIssueHandler'
 import talkHashCheck from './mixins/talkHashCheck'
 
 export default {
@@ -58,10 +58,11 @@ export default {
 	components: {
 		CallView,
 		ChatView,
+		TopBar,
 	},
 
 	mixins: [
-		browserCheck,
+		sessionIssueHandler,
 		talkHashCheck,
 	],
 
@@ -107,14 +108,11 @@ export default {
 				// We have to do this synchronously, because in unload and beforeunload
 				// Promises, async and await are prohibited.
 				signalingKill()
-				leaveConversationSync(this.token)
+				if (!this.isLeavingAfterSessionIssue) {
+					leaveConversationSync(this.token)
+				}
 			}
 		})
-	},
-
-	mounted() {
-		// see browserCheck mixin
-		this.checkBrowser()
 	},
 
 	methods: {
@@ -124,7 +122,7 @@ export default {
 				this.$store.dispatch('setCurrentUser', getCurrentUser())
 			}
 
-			await joinConversation(this.token)
+			await this.$store.dispatch('joinConversation', { token: this.token })
 
 			// Fetching the conversation needs to be done once the user has
 			// joined the conversation (otherwise only limited data would be
@@ -142,11 +140,11 @@ export default {
 			// used), although that should not be a problem given that only the
 			// "inCall" flag (which is locally updated when joining and leaving
 			// a call) is currently used.
-			if (loadState('talk', 'signaling_mode') !== 'internal') {
-				EventBus.$on('shouldRefreshConversations', this.fetchCurrentConversation)
-				EventBus.$on('Signaling::participantListChanged', this.fetchCurrentConversation)
+			if (loadState('spreed', 'signaling_mode') !== 'internal') {
+				EventBus.$on('should-refresh-conversations', this.fetchCurrentConversation)
+				EventBus.$on('signaling-participant-list-changed', this.fetchCurrentConversation)
 			} else {
-				// The "shouldRefreshConversations" event is triggered only when
+				// The "should-refresh-conversations" event is triggered only when
 				// the external signaling server is used; when the internal
 				// signaling server is used periodic polling has to be used
 				// instead.
@@ -158,7 +156,6 @@ export default {
 			await this.$store.dispatch('joinCall', {
 				token: this.token,
 				participantIdentifier: this.$store.getters.getParticipantIdentifier(),
-				flags: PARTICIPANT.CALL_FLAG.IN_CALL,
 			})
 		},
 
@@ -168,21 +165,22 @@ export default {
 			}
 
 			try {
-				const response = await fetchConversation(this.token)
-				this.$store.dispatch('addConversation', response.data.ocs.data)
-				this.$store.dispatch('markConversationRead', this.token)
+				await this.$store.dispatch('fetchConversation', { token: this.token })
 
 				// Although the current participant is automatically added to
 				// the participants store it must be explicitly set in the
 				// actors store.
 				if (!this.$store.getters.getUserId()) {
+					// Set the current actor/participant for guests
+					const conversation = this.$store.getters.conversation(this.token)
+
 					// Setting a guest only uses "sessionId" and "participantType".
-					this.$store.dispatch('setCurrentParticipant', response.data.ocs.data)
+					this.$store.dispatch('setCurrentParticipant', conversation)
 				}
 			} catch (exception) {
 				window.clearInterval(this.fetchCurrentConversationIntervalId)
 
-				this.$store.dispatch('deleteConversationByToken', this.token)
+				this.$store.dispatch('deleteConversation', this.token)
 				this.$store.dispatch('updateToken', '')
 			}
 		},
@@ -191,6 +189,8 @@ export default {
 </script>
 
 <style lang="scss" scoped>
+@import './assets/variables';
+
 /* Properties based on the app-sidebar */
 #talk-sidebar {
 	position: relative;
@@ -250,7 +250,7 @@ export default {
 	height: 50%;
 
 	/* Ensure that the background will be black also in voice only calls. */
-	background-color: #000;
+	background-color: $color-call-background;
 }
 
 #talk-sidebar #call-container ::v-deep .videoContainer {
@@ -280,6 +280,7 @@ export default {
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
+	position: relative;
 
 	flex-grow: 1;
 

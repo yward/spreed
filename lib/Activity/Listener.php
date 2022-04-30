@@ -25,56 +25,72 @@ namespace OCA\Talk\Activity;
 
 use OCA\Talk\Chat\ChatManager;
 use OCA\Talk\Events\AddParticipantsEvent;
+use OCA\Talk\Events\ModifyEveryoneEvent;
 use OCA\Talk\Events\ModifyParticipantEvent;
+use OCA\Talk\Events\ModifyRoomEvent;
 use OCA\Talk\Events\RoomEvent;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Participant;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
 use OCP\Activity\IManager;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\EventDispatcher\IEventDispatcher;
-use OCP\ILogger;
 use OCP\IUser;
 use OCP\IUserSession;
+use Psr\Log\LoggerInterface;
 
 class Listener {
+	protected IManager $activityManager;
 
-	/** @var IManager */
-	protected $activityManager;
+	protected IUserSession $userSession;
 
-	/** @var IUserSession */
-	protected $userSession;
+	protected ChatManager $chatManager;
 
-	/** @var ChatManager */
-	protected $chatManager;
+	protected ParticipantService $participantService;
 
-	/** @var ILogger */
-	protected $logger;
+	protected LoggerInterface $logger;
 
-	/** @var ITimeFactory */
-	protected $timeFactory;
+	protected ITimeFactory $timeFactory;
 
 	public function __construct(IManager $activityManager,
 								IUserSession $userSession,
 								ChatManager $chatManager,
-								ILogger $logger,
+								ParticipantService $participantService,
+								LoggerInterface $logger,
 								ITimeFactory $timeFactory) {
 		$this->activityManager = $activityManager;
 		$this->userSession = $userSession;
 		$this->chatManager = $chatManager;
+		$this->participantService = $participantService;
 		$this->logger = $logger;
 		$this->timeFactory = $timeFactory;
 	}
 
 	public static function register(IEventDispatcher $dispatcher): void {
-		$listener = static function (ModifyParticipantEvent $event) {
+		$listener = static function (ModifyParticipantEvent $event): void {
 			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
-			$listener->setActive($event->getRoom());
+			$listener = \OC::$server->get(self::class);
+			$listener->setActive($event->getRoom(), $event->getParticipant());
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_SESSION_JOIN_CALL, $listener);
 
-		$listener = static function (RoomEvent $event) {
+		$listener = static function (ModifyRoomEvent $event): void {
 			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
+			$listener = \OC::$server->get(self::class);
+			$listener->generateCallActivity($event->getRoom(), true, $event->getActor());
+		};
+		$dispatcher->addListener(Room::EVENT_BEFORE_END_CALL_FOR_EVERYONE, $listener);
+
+		$listener = static function (RoomEvent $event): void {
+			if ($event instanceof ModifyEveryoneEvent) {
+				// The call activity was generated already if the call is ended
+				// for everyone
+				return;
+			}
+
+			/** @var self $listener */
+			$listener = \OC::$server->get(self::class);
 			$listener->generateCallActivity($event->getRoom());
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_PARTICIPANT_REMOVE, $listener);
@@ -82,50 +98,61 @@ class Listener {
 		$dispatcher->addListener(Room::EVENT_AFTER_SESSION_LEAVE_CALL, $listener, -100);
 		$dispatcher->addListener(Room::EVENT_AFTER_ROOM_DISCONNECT, $listener, -100);
 
-		$listener = static function (AddParticipantsEvent $event) {
+		$listener = static function (AddParticipantsEvent $event): void {
 			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
+			$listener = \OC::$server->get(self::class);
 			$listener->generateInvitationActivity($event->getRoom(), $event->getParticipants());
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_USERS_ADD, $listener);
 	}
 
-	public function setActive(Room $room): void {
-		$room->setActiveSince($this->timeFactory->getDateTime(), !$this->userSession->isLoggedIn());
+	public function setActive(Room $room, Participant $participant): void {
+		$room->setActiveSince(
+			$this->timeFactory->getDateTime(),
+			$participant->getSession() ? $participant->getSession()->getInCall() : Participant::FLAG_DISCONNECTED,
+			$participant->getAttendee()->getActorType() !== Attendee::ACTOR_USERS
+		);
 	}
 
 	/**
 	 * Call activity: "You attended a call with {user1} and {user2}"
 	 *
 	 * @param Room $room
+	 * @param bool $endForEveryone
+	 * @param Participant|null $actor
 	 * @return bool True if activity was generated, false otherwise
 	 */
-	public function generateCallActivity(Room $room): bool {
+	public function generateCallActivity(Room $room, bool $endForEveryone = false, ?Participant $actor = null): bool {
 		$activeSince = $room->getActiveSince();
-		if (!$activeSince instanceof \DateTime || $room->hasSessionsInCall()) {
+		if (!$activeSince instanceof \DateTime || (!$endForEveryone && $this->participantService->hasActiveSessionsInCall($room))) {
 			return false;
 		}
 
 		$duration = $this->timeFactory->getTime() - $activeSince->getTimestamp();
-		$userIds = $room->getParticipantUserIds($activeSince);
+		$userIds = $this->participantService->getParticipantUserIds($room, $activeSince);
+		$numGuests = $this->participantService->getGuestCount($room, $activeSince);
 
-		if ((\count($userIds) + $room->getActiveGuests()) === 1) {
-			// Single user pinged or guests only => no summary/activity
-			$room->resetActiveSince();
-			return false;
+		$message = 'call_ended';
+		if ($endForEveryone) {
+			$message = 'call_ended_everyone';
+		} elseif ($room->getType() === Room::TYPE_ONE_TO_ONE && \count($userIds) === 1) {
+			$message = 'call_missed';
 		}
-
-		$numGuests = $room->getActiveGuests();
 
 		if (!$room->resetActiveSince()) {
 			// Race-condition, the room was already reset.
 			return false;
 		}
 
-		$actorId = $userIds[0] ?? 'guests-only';
-		$actorType = $actorId !== 'guests-only' ? 'users' : 'guests';
+		if ($actor instanceof Participant) {
+			$actorId = $actor->getAttendee()->getActorId();
+			$actorType = $actor->getAttendee()->getActorType();
+		} else {
+			$actorId = $userIds[0] ?? 'guests-only';
+			$actorType = $actorId !== 'guests-only' ? Attendee::ACTOR_USERS : Attendee::ACTOR_GUESTS;
+		}
 		$this->chatManager->addSystemMessage($room, $actorType, $actorId, json_encode([
-			'message' => 'call_ended',
+			'message' => $message,
 			'parameters' => [
 				'users' => $userIds,
 				'guests' => $numGuests,
@@ -151,7 +178,7 @@ class Listener {
 					'duration' => $duration,
 				]);
 		} catch (\InvalidArgumentException $e) {
-			$this->logger->logException($e, ['app' => 'spreed']);
+			$this->logger->error($e->getMessage(), ['exception' => $e]);
 			return false;
 		}
 
@@ -160,9 +187,9 @@ class Listener {
 				$event->setAffectedUser($userId);
 				$this->activityManager->publish($event);
 			} catch (\BadMethodCallException $e) {
-				$this->logger->logException($e, ['app' => 'spreed']);
+				$this->logger->error($e->getMessage(), ['exception' => $e]);
 			} catch (\InvalidArgumentException $e) {
-				$this->logger->logException($e, ['app' => 'spreed']);
+				$this->logger->error($e->getMessage(), ['exception' => $e]);
 			}
 		}
 
@@ -194,18 +221,31 @@ class Listener {
 					'room' => $room->getId(),
 				]);
 		} catch (\InvalidArgumentException $e) {
-			$this->logger->logException($e, ['app' => 'spreed']);
+			$this->logger->error($e->getMessage(), ['exception' => $e]);
 			return;
 		}
 
+		// We know the new participant is in the room,
+		// so skip loading them just to make sure they can read it.
+		// Must be overwritten later on for one-to-one chats.
+		$roomName = $room->getDisplayName($actorId);
+
 		foreach ($participants as $participant) {
-			if ($actorId === $participant['userId']) {
+			if ($participant['actorType'] !== Attendee::ACTOR_USERS) {
+				// No user => no activity
+				continue;
+			}
+
+			if ($actorId === $participant['actorId']) {
 				// No activity for self-joining and the creator
 				continue;
 			}
 
 			try {
-				$roomName = $room->getDisplayName($participant['userId']);
+				if ($room->getType() === Room::TYPE_ONE_TO_ONE) {
+					// Overwrite the room name with the other participant
+					$roomName = $room->getDisplayName($participant['actorId']);
+				}
 				$event
 					->setObject('room', $room->getId(), $roomName)
 					->setSubject('invitation', [
@@ -213,12 +253,12 @@ class Listener {
 						'room' => $room->getId(),
 						'name' => $roomName,
 					])
-					->setAffectedUser($participant['userId']);
+					->setAffectedUser($participant['actorId']);
 				$this->activityManager->publish($event);
 			} catch (\InvalidArgumentException $e) {
-				$this->logger->logException($e, ['app' => 'spreed']);
+				$this->logger->error($e->getMessage(), ['exception' => $e]);
 			} catch (\BadMethodCallException $e) {
-				$this->logger->logException($e, ['app' => 'spreed']);
+				$this->logger->error($e->getMessage(), ['exception' => $e]);
 			}
 		}
 	}

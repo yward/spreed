@@ -2,7 +2,7 @@
  *
  * @copyright Copyright (c) 2020, Daniel Calviño Sánchez (danxuliu@gmail.com)
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -34,15 +34,17 @@ import {
  * increase the video quality depending on the call state. Basically the goal is
  * to reduce the CPU usage when there are too many participants in a call.
  *
- * @param {LocalMediaModel} localMediaModel the model for the local media.
- * @param {CallParticipantCollection} callParticipantCollection the collection
+ * @param {object} localMediaModel the model for the local media.
+ * @param {object} callParticipantCollection the collection.
  *        that contains the models for the rest of the participants in the call.
+ * @param {object} trackConstrainer the track constrainer node on which apply
+ *        the constraints.
  */
-export default function SentVideoQualityThrottler(localMediaModel, callParticipantCollection) {
+export default function SentVideoQualityThrottler(localMediaModel, callParticipantCollection, trackConstrainer) {
 	this._localMediaModel = localMediaModel
 	this._callParticipantCollection = callParticipantCollection
 
-	this._videoConstrainer = new VideoConstrainer(localMediaModel)
+	this._videoConstrainer = new VideoConstrainer(trackConstrainer)
 
 	this._gracePeriodAfterSpeakingTimeout = null
 	this._speakingOrInGracePeriodAfterSpeaking = false
@@ -76,13 +78,13 @@ export default function SentVideoQualityThrottler(localMediaModel, callParticipa
 }
 SentVideoQualityThrottler.prototype = {
 
-	destroy: function() {
+	destroy() {
 		this._localMediaModel.off('change:videoAvailable', this._handleLocalVideoAvailableChangeBound)
 
 		this._stopListeningToChanges()
 	},
 
-	_handleLocalVideoAvailableChange: function(localMediaModel, videoAvailable) {
+	_handleLocalVideoAvailableChange(localMediaModel, videoAvailable) {
 		if (videoAvailable) {
 			this._startListeningToChanges()
 		} else {
@@ -90,7 +92,7 @@ SentVideoQualityThrottler.prototype = {
 		}
 	},
 
-	_startListeningToChanges: function() {
+	_startListeningToChanges() {
 		this._localMediaModel.on('change:videoEnabled', this._adjustVideoQualityIfNeededBound)
 		this._localMediaModel.on('change:audioEnabled', this._handleLocalAudioEnabledChangeBound)
 		this._localMediaModel.on('change:speaking', this._handleLocalSpeakingChangeBound)
@@ -109,7 +111,7 @@ SentVideoQualityThrottler.prototype = {
 		this._adjustVideoQualityIfNeeded()
 	},
 
-	_stopListeningToChanges: function() {
+	_stopListeningToChanges() {
 		this._localMediaModel.off('change:videoEnabled', this._adjustVideoQualityIfNeededBound)
 		this._localMediaModel.off('change:audioEnabled', this._handleLocalAudioEnabledChangeBound)
 		this._localMediaModel.off('change:speaking', this._handleLocalSpeakingChangeBound)
@@ -123,21 +125,21 @@ SentVideoQualityThrottler.prototype = {
 		})
 	},
 
-	_handleAddParticipant: function(callParticipantCollection, callParticipantModel) {
+	_handleAddParticipant(callParticipantCollection, callParticipantModel) {
 		callParticipantModel.on('change:videoAvailable', this._adjustVideoQualityIfNeededBound)
 		callParticipantModel.on('change:audioAvailable', this._adjustVideoQualityIfNeededBound)
 
 		this._adjustVideoQualityIfNeeded()
 	},
 
-	_handleRemoveParticipant: function(callParticipantCollection, callParticipantModel) {
+	_handleRemoveParticipant(callParticipantCollection, callParticipantModel) {
 		callParticipantModel.off('change:videoAvailable', this._adjustVideoQualityIfNeededBound)
 		callParticipantModel.off('change:audioAvailable', this._adjustVideoQualityIfNeededBound)
 
 		this._adjustVideoQualityIfNeeded()
 	},
 
-	_handleLocalAudioEnabledChange: function() {
+	_handleLocalAudioEnabledChange() {
 		if (this._localMediaModel.get('audioEnabled')) {
 			return
 		}
@@ -150,7 +152,7 @@ SentVideoQualityThrottler.prototype = {
 		this._adjustVideoQualityIfNeeded()
 	},
 
-	_handleLocalSpeakingChange: function() {
+	_handleLocalSpeakingChange() {
 		if (this._localMediaModel.get('speaking')) {
 			window.clearTimeout(this._gracePeriodAfterSpeakingTimeout)
 			this._gracePeriodAfterSpeakingTimeout = null
@@ -169,7 +171,7 @@ SentVideoQualityThrottler.prototype = {
 		}, 5000)
 	},
 
-	_adjustVideoQualityIfNeeded: function() {
+	_adjustVideoQualityIfNeeded() {
 		if (!this._localMediaModel.get('videoAvailable') || !this._localMediaModel.get('videoEnabled')) {
 			return
 		}
@@ -178,7 +180,7 @@ SentVideoQualityThrottler.prototype = {
 		this._videoConstrainer.applyConstraints(quality)
 	},
 
-	_getQualityForState: function() {
+	_getQualityForState() {
 		if (this._speakingOrInGracePeriodAfterSpeaking) {
 			return QUALITY.HIGH
 		}

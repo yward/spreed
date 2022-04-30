@@ -20,182 +20,214 @@
 -->
 
 <template>
-	<div class="top-bar">
-		<CallButton class="top-bar__button" />
-		<!-- Call layout switcher -->
-		<Popover v-if="isInCall"
-			class="top-bar__button"
-			trigger="manual"
-			:open="showLayoutHint && !hintDismissed"
-			@auto-hide="showLayoutHint=false">
-			<Actions slot="trigger">
-				<ActionButton v-if="isInCall"
-					:icon="changeViewIconClass"
-					@click="changeView">
-					{{ changeViewText }}
-				</actionbutton>
-			</Actions>
-			<div class="hint">
-				{{ layoutHintText }}
-				<div class="hint__actions">
-					<button
-						@click="showLayoutHint=false, hintDismissed=true">
-						{{ t('spreed', 'Dismiss') }}
-					</button>
-					<button
-						class="primary"
-						@click="changeView">
-						{{ t('spreed', 'Use promoted view') }}
-					</button>
-				</div>
+	<div class="top-bar" :class="{ 'in-call': isInCall }">
+		<ConversationIcon v-if="!isInCall"
+			:key="conversation.token"
+			class="conversation-icon"
+			:offline="isPeerOffline"
+			:item="conversation"
+			:hide-favorite="false"
+			:hide-call="false" />
+		<!-- conversation header -->
+		<a v-if="!isInCall"
+			class="conversation-header"
+			@click="openConversationSettings">
+			<div class="conversation-header__text"
+				:class="{'conversation-header__text--offline': isPeerOffline}">
+				<p class="title">
+					{{ conversation.displayName }}
+				</p>
+				<p v-if="showUserStatusAsDescription"
+					class="description">
+					{{ statusMessage }}
+				</p>
+				<p v-else-if="conversation.description"
+					v-tooltip.bottom="{
+						content: renderedDescription,
+						delay: { show: 500, hide: 500 },
+						autoHide: false,
+						html: true,
+					}"
+					class="description">
+					{{ conversation.description }}
+				</p>
 			</div>
-		</Popover>
-		<!-- sidebar toggle -->
-		<Actions
-			v-shortkey="['f']"
-			class="top-bar__button"
-			menu-align="right"
-			@shortkey.native="toggleFullscreen">
-			<ActionButton
-				:icon="iconFullscreen"
-				:aria-label="t('spreed', 'Toggle fullscreen')"
-				:close-after-click="true"
-				@click="toggleFullscreen">
-				{{ labelFullscreen }}
-			</ActionButton>
-			<ActionSeparator
-				v-if="showModerationOptions" />
-			<ActionLink
-				v-if="isFileConversation"
-				icon="icon-text"
-				:href="linkToFile">
-				{{ t('spreed', 'Go to file') }}
-			</ActionLink>
-			<template
-				v-if="showModerationOptions">
-				<ActionButton
+		</a>
+		<LocalMediaControls v-if="isInCall"
+			class="local-media-controls"
+			:token="token"
+			:model="localMediaModel"
+			:show-actions="!isSidebar"
+			:screen-sharing-button-hidden="isSidebar"
+			:local-call-participant-model="localCallParticipantModel" />
+		<div class="top-bar__buttons">
+			<CallButton class="top-bar__button" />
+
+			<!-- Vertical line -->
+			<div v-if="!isSidebar && isInCall"
+				class="top-bar__separator" />
+
+			<!-- sidebar toggle -->
+			<Actions v-if="!isSidebar"
+				v-shortkey.once="['f']"
+				class="top-bar__button"
+				menu-align="right"
+				:aria-label="t('spreed', 'Conversation actions')"
+				:container="container"
+				@shortkey.native="toggleFullscreen">
+				<Cog slot="icon"
+					:size="20"
+					decorative
+					title="" />
+				<ActionButton :icon="iconFullscreen"
+					:aria-label="t('spreed', 'Toggle fullscreen')"
 					:close-after-click="true"
-					icon="icon-rename"
-					@click="handleRenameConversation">
-					{{ t('spreed', 'Rename conversation') }}
+					@click="toggleFullscreen">
+					{{ labelFullscreen }}
 				</ActionButton>
-				<ActionSeparator
-					v-if="canFullModerate" />
-				<ActionCheckbox
-					v-if="canFullModerate"
-					:checked="isSharedPublicly"
-					@change="toggleGuests">
-					{{ t('spreed', 'Share link') }}
-				</ActionCheckbox>
-			</template>
-			<ActionButton
-				v-if="!isOneToOneConversation"
-				icon="icon-clippy"
-				:close-after-click="true"
-				@click="handleCopyLink">
-				{{ t('spreed', 'Copy link') }}
-			</ActionButton>
-			<!-- password -->
-			<template
-				v-if="showModerationOptions">
-				<ActionCheckbox
-					v-if="isSharedPublicly"
-					class="share-link-password-checkbox"
-					:checked="isPasswordProtected"
-					@check="handlePasswordEnable"
-					@uncheck="handlePasswordDisable">
-					{{ t('spreed', 'Password protection') }}
-				</ActionCheckbox>
-				<ActionInput
-					v-show="isEditingPassword"
-					class="share-link-password"
-					icon="icon-password"
-					type="password"
-					:value.sync="password"
-					autocomplete="new-password"
-					@submit="handleSetNewPassword">
-					{{ t('spreed', 'Enter a password') }}
-				</ActionInput>
-				<ActionSeparator />
-				<ActionCheckbox
-					:checked="hasLobbyEnabled"
-					@change="toggleLobby">
-					{{ t('spreed', 'Enable lobby') }}
-				</ActionCheckbox>
-				<ActionInput
-					v-if="hasLobbyEnabled"
-					icon="icon-calendar-dark"
-					type="datetime-local"
-					v-bind="dateTimePickerAttrs"
-					:value="lobbyTimer"
-					:disabled="lobbyTimerLoading"
-					@change="setLobbyTimer">
-					{{ t('spreed', 'Start time (optional)') }}
-				</ActionInput>
-			</template>
-		</Actions>
-		<Actions v-if="showOpenSidebarButton"
-			class="top-bar__button"
-			close-after-click="true">
-			<ActionButton
-				:icon="iconMenuPeople"
-				@click="openSidebar" />
-		</Actions>
+				<ActionSeparator v-if="showModerationOptions" />
+				<ActionLink v-if="isFileConversation"
+					icon="icon-text"
+					:href="linkToFile">
+					{{ t('spreed', 'Go to file') }}
+				</ActionLink>
+				<template v-if="showModerationOptions">
+					<ActionButton :close-after-click="true"
+						icon="icon-rename"
+						@click="handleRenameConversation">
+						{{ t('spreed', 'Rename conversation') }}
+					</ActionButton>
+				</template>
+				<ActionButton v-if="!isOneToOneConversation"
+					icon="icon-clippy"
+					:close-after-click="true"
+					@click="handleCopyLink">
+					{{ t('spreed', 'Copy link') }}
+				</ActionButton>
+				<template v-if="showModerationOptions && canFullModerate && isInCall">
+					<ActionSeparator />
+					<ActionButton :close-after-click="true"
+						@click="forceMuteOthers">
+						<MicrophoneOff slot="icon"
+							:size="20"
+							decorative
+							title="" />
+						{{ t('spreed', 'Mute others') }}
+					</ActionButton>
+				</template>
+				<ActionSeparator v-if="showModerationOptions" />
+				<ActionButton icon="icon-settings"
+					:close-after-click="true"
+					@click="openConversationSettings">
+					{{ t('spreed', 'Conversation settings') }}
+				</ActionButton>
+			</Actions>
+			<Actions v-if="showOpenSidebarButton"
+				class="top-bar__button"
+				close-after-click="true"
+				:container="container">
+				<ActionButton v-if="isInCall"
+					key="openSideBarButtonMessageText"
+					@click="openSidebar">
+					<MessageText slot="icon"
+						:size="20"
+						title=""
+						fill-color="#ffffff"
+						decorative />
+				</ActionButton>
+				<ActionButton v-else
+					key="openSideBarButtonMenuPeople"
+					:icon="iconMenuPeople"
+					@click="openSidebar" />
+			</Actions>
+		</div>
+		<CounterBubble v-if="!isSidebar && showOpenSidebarButton && isInCall && unreadMessagesCounter > 0"
+			class="unread-messages-counter"
+			:highlighted="hasUnreadMentions">
+			{{ unreadMessagesCounter }}
+		</CounterBubble>
 	</div>
 </template>
 
 <script>
-import { showError, showSuccess } from '@nextcloud/dialogs'
+import { showError, showSuccess, showMessage } from '@nextcloud/dialogs'
 import ActionButton from '@nextcloud/vue/dist/Components/ActionButton'
-import Popover from '@nextcloud/vue/dist/Components/Popover'
 import Actions from '@nextcloud/vue/dist/Components/Actions'
+import CounterBubble from '@nextcloud/vue/dist/Components/CounterBubble'
 import CallButton from './CallButton'
-import { EventBus } from '../../services/EventBus'
 import BrowserStorage from '../../services/BrowserStorage'
-import ActionCheckbox from '@nextcloud/vue/dist/Components/ActionCheckbox'
-import ActionInput from '@nextcloud/vue/dist/Components/ActionInput'
 import ActionLink from '@nextcloud/vue/dist/Components/ActionLink'
 import ActionSeparator from '@nextcloud/vue/dist/Components/ActionSeparator'
-import { CONVERSATION, WEBINAR, PARTICIPANT } from '../../constants'
-import {
-	setConversationPassword,
-} from '../../services/conversationsService'
+import MessageText from 'vue-material-design-icons/MessageText'
+import MicrophoneOff from 'vue-material-design-icons/MicrophoneOff'
+import { CONVERSATION, PARTICIPANT } from '../../constants'
 import { generateUrl } from '@nextcloud/router'
+import { callParticipantCollection, localCallParticipantModel, localMediaModel } from '../../utils/webrtc/index'
+import { emit } from '@nextcloud/event-bus'
+import ConversationIcon from '../ConversationIcon'
+import Tooltip from '@nextcloud/vue/dist/Directives/Tooltip'
+import richEditor from '@nextcloud/vue/dist/Mixins/richEditor'
+import userStatus from '../../mixins/userStatus'
+import LocalMediaControls from '../CallView/shared/LocalMediaControls'
+import Cog from 'vue-material-design-icons/Cog'
+import getParticipants from '../../mixins/getParticipants'
 
 export default {
 	name: 'TopBar',
 
+	directives: {
+		Tooltip,
+	},
+
 	components: {
 		ActionButton,
 		Actions,
-		ActionCheckbox,
-		ActionInput,
 		ActionLink,
+		CounterBubble,
 		CallButton,
-		Popover,
 		ActionSeparator,
+		MessageText,
+		MicrophoneOff,
+		ConversationIcon,
+		LocalMediaControls,
+		Cog,
 	},
+
+	mixins: [
+		richEditor,
+		userStatus,
+		getParticipants,
+	],
 
 	props: {
 		isInCall: {
 			type: Boolean,
 			required: true,
 		},
+
+		/**
+		 * In the sidebar the conversation settings are hidden
+		 */
+		isSidebar: {
+			type: Boolean,
+			default: false,
+		},
 	},
 
-	data() {
+	data: () => {
 		return {
-			showLayoutHint: false,
-			hintDismissed: false,
-			// The conversation's password
-			password: '',
-			// Switch for the password-editing operation
-			isEditingPassword: false,
-			lobbyTimerLoading: false,
+			unreadNotificationHandle: null,
+			localCallParticipantModel,
+			localMediaModel,
+
 		}
 	},
 
 	computed: {
+		container() {
+			return this.$store.getters.getMainContainerSelector()
+		},
+
 		isFullscreen() {
 			return this.$store.getters.isFullscreen()
 		},
@@ -209,9 +241,9 @@ export default {
 
 		labelFullscreen() {
 			if (this.isFullscreen) {
-				return t('spreed', 'Exit fullscreen (f)')
+				return t('spreed', 'Exit fullscreen (F)')
 			}
-			return t('spreed', 'Fullscreen (f)')
+			return t('spreed', 'Fullscreen (F)')
 		},
 
 		iconMenuPeople() {
@@ -225,30 +257,14 @@ export default {
 			return !this.$store.getters.getSidebarStatus
 		},
 
-		changeViewText() {
-			if (this.isGrid) {
-				return t('spreed', 'Promoted view')
-			} else {
-				return t('spreed', 'Grid view')
-			}
-		},
-		changeViewIconClass() {
-			if (this.isGrid) {
-				return 'forced-white icon-promoted-view'
-			} else {
-				return 'forced-white icon-grid-view'
-			}
-		},
-
-		layoutHintText() {
-			return t('Spreed', `The amount of videos don't fit in the window. Maximize or switch to 'promoted view' for a better experience.`)
-		},
 		isFileConversation() {
 			return this.conversation.objectType === 'file' && this.conversation.objectId
 		},
+
 		isOneToOneConversation() {
 			return this.conversation.type === CONVERSATION.TYPE.ONE_TO_ONE
 		},
+
 		linkToFile() {
 			if (this.isFileConversation) {
 				return window.location.protocol + '//' + window.location.host + generateUrl('/f/' + this.conversation.objectId)
@@ -268,29 +284,34 @@ export default {
 		canModerate() {
 			return this.canFullModerate || this.participantType === PARTICIPANT.TYPE.GUEST_MODERATOR
 		},
+
 		showModerationOptions() {
 			return !this.isOneToOneConversation && this.canModerate
 		},
+
 		token() {
 			return this.$store.getters.getToken()
 		},
-		isSharedPublicly() {
-			return this.conversation.type === CONVERSATION.TYPE.PUBLIC
-		},
+
 		conversation() {
-			if (this.$store.getters.conversation(this.token)) {
-				return this.$store.getters.conversation(this.token)
-			}
-			return {
-				token: '',
-				displayName: '',
-				isFavorite: false,
-				hasPassword: false,
-				type: CONVERSATION.TYPE.PUBLIC,
-				lobbyState: WEBINAR.LOBBY.NONE,
-				lobbyTimer: 0,
-			}
+			return this.$store.getters.conversation(this.token) || this.$store.getters.dummyConversation
 		},
+
+		showUserStatusAsDescription() {
+			return this.isOneToOneConversation && this.statusMessage
+		},
+
+		statusMessage() {
+			return this.getStatusMessage(this.conversation)
+		},
+
+		unreadMessagesCounter() {
+			return this.conversation.unreadMessages
+		},
+		hasUnreadMentions() {
+			return this.conversation.unreadMention
+		},
+
 		linkToConversation() {
 			if (this.token !== '') {
 				return window.location.protocol + '//' + window.location.host + generateUrl('/call/' + this.token)
@@ -298,73 +319,114 @@ export default {
 				return ''
 			}
 		},
+
 		conversationHasSettings() {
 			return this.conversation.type === CONVERSATION.TYPE.GROUP
 				|| this.conversation.type === CONVERSATION.TYPE.PUBLIC
 		},
-		hasLobbyEnabled() {
-			return this.conversation.lobbyState === WEBINAR.LOBBY.NON_MODERATORS
+
+		renderedDescription() {
+			return this.renderContent(this.conversation.description)
 		},
-		isPasswordProtected() {
-			return this.conversation.hasPassword
+
+		/**
+		 * Current actor id
+		 */
+		actorId() {
+			return this.$store.getters.getActorId()
 		},
-		lobbyTimer() {
-			// A timestamp of 0 means that there is no lobby, but it would be
-			// interpreted as the Unix epoch by the DateTimePicker.
-			if (this.conversation.lobbyTimer === 0) {
+
+		/**
+		 * Online status of the peer in one to one conversation.
+		 */
+		isPeerOffline() {
+			// Only compute this in on to one conversations
+			if (!this.isOneToOneConversation) {
 				return undefined
 			}
 
-			// PHP timestamp is second-based; JavaScript timestamp is
-			// millisecond based.
-			return this.conversation.lobbyTimer * 1000
-		},
+			// Get the 1 to 1 peer
+			let peer
+			const participants = this.$store.getters.participantsList(this.token)
+			for (const participant of participants) {
+				if (participant.actorId !== this.actorId) {
+					peer = participant
+				}
+			}
 
-		dateTimePickerAttrs() {
-			return {
-				format: 'YYYY-MM-DD HH:mm',
-				firstDayOfWeek: window.firstDay + 1, // Provided by server
-				lang: {
-					days: window.dayNamesShort, // Provided by server
-					months: window.monthNamesShort, // Provided by server
-				},
-				// Do not update the value until the confirm button has been
-				// pressed. Otherwise it would not be possible to set a lobby
-				// for today, because as soon as the day is selected the lobby
-				// timer would be set, but as no time was set at that point the
-				// lobby timer would be set to today at 00:00, which would
-				// disable the lobby due to being in the past.
-				confirm: true,
+			if (peer) {
+				return !peer.sessionIds.length
+			} else return false
+		},
+	},
+
+	watch: {
+		unreadMessagesCounter(newValue, oldValue) {
+			if (!this.isInCall || !this.showOpenSidebarButton) {
+				return
+			}
+
+			// new messages arrived
+			if (newValue > 0 && oldValue === 0 && !this.hasUnreadMentions) {
+				this.notifyUnreadMessages(t('spreed', 'You have new unread messages in the chat.'))
 			}
 		},
-		isGrid() {
-			return this.$store.getters.isGrid
+
+		hasUnreadMentions(newValue, oldValue) {
+			if (!this.isInCall || !this.showOpenSidebarButton) {
+				return
+			}
+
+			if (newValue) {
+				this.notifyUnreadMessages(t('spreed', 'You have been mentioned in the chat.'))
+			}
+		},
+
+		isInCall(newValue) {
+			if (!newValue) {
+				// discard notification if the call ends
+				this.notifyUnreadMessages(null)
+			}
+		},
+
+		// Starts and stops the getParticipantsMixin logic
+		isOneToOneConversation(newValue) {
+			if (newValue) {
+				this.initialiseGetParticipantsMixin()
+			} else {
+				this.stopGetParticipantsMixin()
+			}
 		},
 	},
 
 	mounted() {
+		document.body.classList.add('has-topbar')
 		document.addEventListener('fullscreenchange', this.fullScreenChanged, false)
 		document.addEventListener('mozfullscreenchange', this.fullScreenChanged, false)
 		document.addEventListener('MSFullscreenChange', this.fullScreenChanged, false)
 		document.addEventListener('webkitfullscreenchange', this.fullScreenChanged, false)
-		// Add call layout hint listener
-		EventBus.$on('toggleLayoutHint', (display) => {
-			this.showLayoutHint = display
-		})
 	},
 
 	beforeDestroy() {
+		this.notifyUnreadMessages(null)
 		document.removeEventListener('fullscreenchange', this.fullScreenChanged, false)
 		document.removeEventListener('mozfullscreenchange', this.fullScreenChanged, false)
 		document.removeEventListener('MSFullscreenChange', this.fullScreenChanged, false)
 		document.removeEventListener('webkitfullscreenchange', this.fullScreenChanged, false)
-		// Remove call layout hint listener
-		EventBus.$off('toggleLayoutHint', (display) => {
-			this.showLayoutHint = display
-		})
+		document.body.classList.remove('has-topbar')
 	},
 
 	methods: {
+		notifyUnreadMessages(message) {
+			if (this.unreadNotificationHandle) {
+				this.unreadNotificationHandle.hideToast()
+				this.unreadNotificationHandle = null
+			}
+			if (message) {
+				this.unreadNotificationHandle = showMessage(message)
+			}
+		},
+
 		openSidebar() {
 			this.$store.dispatch('showSidebar')
 			BrowserStorage.setItem('sidebarOpen', 'true')
@@ -413,59 +475,6 @@ export default {
 			}
 		},
 
-		changeView() {
-			this.$store.dispatch('isGrid', !this.isGrid)
-			this.$store.dispatch('selectedVideoPeerId', null)
-			this.showLayoutHint = false
-		},
-		async toggleGuests() {
-			await this.$store.dispatch('toggleGuests', {
-				token: this.token,
-				allowGuests: this.conversation.type !== CONVERSATION.TYPE.PUBLIC,
-			})
-		},
-
-		async toggleLobby() {
-			await this.$store.dispatch('toggleLobby', {
-				token: this.token,
-				enableLobby: this.conversation.lobbyState !== WEBINAR.LOBBY.NON_MODERATORS,
-			})
-		},
-
-		async setLobbyTimer(date) {
-			this.lobbyTimerLoading = true
-
-			let timestamp = 0
-			if (date) {
-				// PHP timestamp is second-based; JavaScript timestamp is
-				// millisecond based.
-				timestamp = date.getTime() / 1000
-			}
-
-			await this.$store.dispatch('setLobbyTimer', {
-				token: this.token,
-				timestamp: timestamp,
-			})
-
-			this.lobbyTimerLoading = false
-		},
-		async handlePasswordDisable() {
-			// disable the password protection for the current conversation
-			if (this.conversation.hasPassword) {
-				await setConversationPassword(this.token, '')
-			}
-			this.password = ''
-			this.isEditingPassword = false
-		},
-		async handlePasswordEnable() {
-			this.isEditingPassword = true
-		},
-
-		async handleSetNewPassword() {
-			await setConversationPassword(this.token, this.password)
-			this.password = ''
-			this.isEditingPassword = false
-		},
 		async handleCopyLink() {
 			try {
 				await this.$copyText(this.linkToConversation)
@@ -478,6 +487,15 @@ export default {
 			this.$store.dispatch('isRenamingConversation', true)
 			this.$store.dispatch('showSidebar')
 		},
+		forceMuteOthers() {
+			callParticipantCollection.callParticipantModels.forEach(callParticipantModel => {
+				callParticipantModel.forceMute()
+			})
+		},
+
+		openConversationSettings() {
+			emit('show-conversation-settings', { token: this.token })
+		},
 	},
 }
 </script>
@@ -487,36 +505,100 @@ export default {
 @import '../../assets/variables';
 
 .top-bar {
-	height: $top-bar-height;
-	position: absolute;
-	top: 0;
-	right: 0;
+	right: 12px; /* needed so we can still use the scrollbar */
 	display: flex;
 	z-index: 10;
 	justify-content: flex-end;
-	padding: 0 6px;
+	padding: 8px;
+	background-color: var(--color-main-background);
+	border-bottom: 1px solid var(--color-border);
+
+	.talk-sidebar-callview & {
+		margin-right: $clickable-area;
+	}
+
+	&.in-call {
+		right: 0;
+		border: none;
+		position: absolute;
+		top: 0;
+		left:0;
+		background-color: $color-call-background;
+		display: flex;
+		flex-wrap: wrap-reverse;
+	}
+
+	&__buttons {
+		display: flex;
+		margin-left: 8px;
+	}
+
 	&__button {
 		margin: 0 2px;
 		align-self: center;
 		display: flex;
 		align-items: center;
-		svg {
-			margin-right: 4px !important;
-		}
+		white-space: nowrap;
 		.icon {
 			margin-right: 4px !important;
 		}
 	}
 
+	.unread-messages-counter {
+		position: absolute;
+		top: 40px;
+		right: 4px;
+		pointer-events: none;
+	}
+
+	&__separator {
+		top: 4px;
+		border-left: 1px solid white;
+		height: 36px;
+		margin: auto 6px;
+		opacity: 0.5;
+	}
 }
 
-.hint {
-	padding: 4px;
-	text-align: left;
-	&__actions{
+.conversation-icon {
+	margin-left: 48px;
+}
+
+.conversation-header {
+	position: relative;
+	display: flex;
+	overflow-x: hidden;
+	overflow-y: clip;
+	white-space: nowrap;
+	width: 100%;
+	cursor: pointer;
+	&__text {
 		display: flex;
-		justify-content: space-between;
-		padding-top:4px;
+		flex-direction:column;
+		flex-grow: 1;
+		margin-left: 8px;
+		justify-content: center;
+		width: 100%;
+		overflow: hidden;
+		height: $clickable-area;
+		&--offline {
+			color: var(--color-text-maxcontrast);
+		}
 	}
+	.title {
+		font-weight: bold;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.description {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: fit-content;
+		color: var(--color-text-lighter);
+	}
+}
+
+.local-media-controls {
+	padding-left: $clickable-area;
 }
 </style>

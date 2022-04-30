@@ -1,7 +1,7 @@
 /**
  * @copyright Copyright (c) 2020 Daniel Calviño Sánchez <danxuliu@gmail.com>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -19,8 +19,10 @@
  */
 
 import Vue from 'vue'
+import VueObserveVisibility from 'vue-observe-visibility'
 import PublicShareAuthRequestPasswordButton from './PublicShareAuthRequestPasswordButton'
 import PublicShareAuthSidebar from './PublicShareAuthSidebar'
+import './init'
 
 // Store
 import Vuex from 'vuex'
@@ -33,6 +35,16 @@ import { getRequestToken } from '@nextcloud/auth'
 // Directives
 import { translate, translatePlural } from '@nextcloud/l10n'
 import VueShortKey from 'vue-shortkey'
+import vOutsideEvents from 'vue-outside-events'
+
+// Styles
+import '@nextcloud/dialogs/styles/toast.scss'
+import 'leaflet/dist/leaflet.css'
+
+// Leaflet icon patch
+import 'leaflet-defaulticon-compatibility/dist/leaflet-defaulticon-compatibility.webpack.css' // Re-uses images from ~leaflet package
+// eslint-disable-next-line
+import 'leaflet-defaulticon-compatibility'
 
 // CSP config for webpack dynamic chunk loading
 // eslint-disable-next-line
@@ -52,6 +64,8 @@ Vue.prototype.OCA = OCA
 
 Vue.use(Vuex)
 Vue.use(VueShortKey, { prevent: ['input', 'textarea', 'div'] })
+Vue.use(vOutsideEvents)
+Vue.use(VueObserveVisibility)
 
 /**
  * Wraps all the body contents in its own container.
@@ -65,7 +79,7 @@ function wrapBody() {
 	const bodyWrapperElement = document.createElement('div')
 
 	while (bodyElement.childNodes.length) {
-		bodyWrapperElement.append(bodyElement.childNodes[0])
+		bodyWrapperElement.appendChild(bodyElement.childNodes[0])
 	}
 
 	while (bodyElement.classList.length) {
@@ -76,24 +90,27 @@ function wrapBody() {
 	bodyWrapperElement.setAttribute('id', bodyElement.getAttribute('id'))
 	bodyElement.removeAttribute('id')
 
-	bodyElement.append(bodyWrapperElement)
+	bodyElement.appendChild(bodyWrapperElement)
 }
 
+/**
+ *
+ */
 function adjustLayout() {
 	const contentElement = document.createElement('div')
 	contentElement.setAttribute('id', 'content')
-	document.querySelector('body').append(contentElement)
+	document.querySelector('body').appendChild(contentElement)
 
-	contentElement.append(document.querySelector('.wrapper'))
-	contentElement.append(document.querySelector('footer'))
+	contentElement.appendChild(document.querySelector('.wrapper'))
+	contentElement.appendChild(document.querySelector('footer'))
 
 	const requestPasswordElement = document.createElement('div')
 	requestPasswordElement.setAttribute('id', 'request-password')
-	document.querySelector('main').append(requestPasswordElement)
+	document.querySelector('main').appendChild(requestPasswordElement)
 
 	const talkSidebarElement = document.createElement('div')
 	talkSidebarElement.setAttribute('id', 'talk-sidebar')
-	document.querySelector('body').append(talkSidebarElement)
+	document.querySelector('body').appendChild(talkSidebarElement)
 
 	wrapBody()
 
@@ -102,6 +119,9 @@ function adjustLayout() {
 
 adjustLayout()
 
+/**
+ *
+ */
 function getShareToken() {
 	const shareTokenElement = document.getElementById('sharingToken')
 	return shareTokenElement.value

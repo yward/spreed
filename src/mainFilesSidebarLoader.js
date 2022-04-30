@@ -3,7 +3,7 @@
  *
  * @author Marco Ambrosini <marcoambrosini@pm.me>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -21,8 +21,7 @@
  */
 
 import FilesSidebarCallView from './views/FilesSidebarCallView'
-import FilesSidebarTab from './views/FilesSidebarTab'
-import { leaveConversation } from './services/participantsService'
+import './init'
 
 const isEnabled = function(fileInfo) {
 	if (fileInfo && !fileInfo.isDirectory()) {
@@ -35,7 +34,7 @@ const isEnabled = function(fileInfo) {
 	// left; this must be done here because "setFileInfo" will not get
 	// called with the new file if the tab can not be displayed.
 	if (token) {
-		leaveConversation(token)
+		OCA.Talk.store.dispatch('leaveConversation', { token })
 	}
 
 	OCA.Talk.store.dispatch('updateTokenAndFileIdForToken', {
@@ -46,9 +45,45 @@ const isEnabled = function(fileInfo) {
 	return false
 }
 
+// It might be enough to keep the instance only in the Tab object itself,
+// without using a shared variable that can be destroyed if a new tab is
+// mounted and the previous one was not destroyed yet, as the tabs seem to
+// always be properly destroyed. However, this is how it is done for tabs in
+// server, so it is done here too just to be safe.
+let tabInstance = null
+
 window.addEventListener('DOMContentLoaded', () => {
 	if (OCA.Files && OCA.Files.Sidebar) {
 		OCA.Files.Sidebar.registerSecondaryView(new FilesSidebarCallView())
-		OCA.Files.Sidebar.registerTab(new OCA.Files.Sidebar.Tab('tab-chat', FilesSidebarTab, isEnabled))
+		OCA.Files.Sidebar.registerTab(new OCA.Files.Sidebar.Tab({
+			id: 'chat',
+			name: t('spreed', 'Chat'),
+			icon: 'icon-talk',
+			enabled: isEnabled,
+
+			async mount(el, fileInfo, context) {
+				if (tabInstance) {
+					tabInstance.$destroy()
+				}
+
+				// Dirty hack to force the style on parent component
+				const tabChat = document.querySelector('#tab-chat')
+				tabChat.style.height = '100%'
+				// Remove paddding to maximize space for the chat view
+				tabChat.style.padding = '0'
+
+				OCA.Talk.fileInfo = this.fileInfo
+				tabInstance = OCA.Talk.newTab()
+				tabInstance.$mount(el)
+			},
+			update(fileInfo) {
+				OCA.Talk.fileInfo = fileInfo
+			},
+			destroy() {
+				OCA.Talk.fileInfo = null
+				tabInstance.$destroy()
+				tabInstance = null
+			},
+		}))
 	}
 })

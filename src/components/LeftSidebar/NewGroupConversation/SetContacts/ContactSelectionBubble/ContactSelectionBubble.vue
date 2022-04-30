@@ -21,18 +21,17 @@
 
 <template>
 	<div class="contact-selection-bubble">
-		<AvatarWrapperSmall
-			:id="participant.id"
+		<AvatarWrapperSmall :id="participant.id"
 			class="contact-selection-bubble__avatar"
 			:name="participant.label"
 			:source="participant.source"
+			:show-user-status="false"
 			:disable-menu="true"
 			:disable-tooltip="true" />
 		<span class="contact-selection-bubble__username">
-			{{ trimmedName }}
+			{{ displayName }}
 		</span>
-		<button
-			class="icon-close contact-selection-bubble__remove"
+		<button class="icon-close contact-selection-bubble__remove"
 			@click="removeParticipantFromSelection(participant)" />
 	</div>
 </template>
@@ -54,9 +53,10 @@ export default {
 	},
 
 	computed: {
-		// First group of characrers before the space in the name the string
-		trimmedName() {
-			return this.participant.label.match(/^\S*/)[0]
+		displayName() {
+			// Used to be the group of characters before the first space in the name.
+			// But it causes weird scenarios in formal companies or when people have titles.
+			return this.participant.label
 		},
 	},
 
@@ -85,7 +85,8 @@ $bubble-height: 24px;
 	}
 	// Limit the length of the username
 	&__username {
-		max-width: 80px;
+		max-width: 190px;
+		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}

@@ -21,28 +21,33 @@
 
 <template>
 	<div class="message-group">
-		<div v-if="dateSeparator" class="message-group__date-header">
-			<span class="date">{{ dateSeparator }}</span>
+		<div v-if="dateSeparator"
+			class="message-group__date-header">
+			<span class="date"
+				role="heading"
+				aria-level="3">{{ dateSeparator }}</span>
 		</div>
-		<div class="wrapper">
-			<div class="messages__avatar">
-				<AuthorAvatar v-if="!isSystemMessage"
-					:author-type="actorType"
+		<div class="wrapper"
+			:class="{'wrapper--system': isSystemMessage}">
+			<div v-if="!isSystemMessage" class="messages__avatar">
+				<AuthorAvatar :author-type="actorType"
 					:author-id="actorId"
 					:display-name="actorDisplayName" />
 			</div>
-			<div class="messages">
-				<Message
-					v-for="(message, index) of messages"
+			<ul class="messages">
+				<Message v-for="(message, index) of messages"
 					:key="message.id"
 					v-bind="message"
 					:is-first-message="index === 0"
+					:next-message-id="(messages[index + 1] && messages[index + 1].id) || nextMessageId"
+					:previous-message-id="(index > 0 && messages[index - 1].id) || previousMessageId"
+					:last-read-message-id="lastReadMessageId"
 					:actor-type="actorType"
 					:actor-id="actorId"
 					:actor-display-name="actorDisplayName"
 					:show-author="!isSystemMessage"
 					:is-temporary="message.timestamp === 0" />
-			</div>
+			</ul>
 		</div>
 	</div>
 </template>
@@ -50,6 +55,7 @@
 <script>
 import AuthorAvatar from './AuthorAvatar'
 import Message from './Message/Message'
+import { ATTENDEE } from '../../../constants'
 
 export default {
 	name: 'MessagesGroup',
@@ -64,6 +70,7 @@ export default {
 		/**
 		 * The message id.
 		 */
+		// FIXME: looks unused
 		id: {
 			type: [String, Number],
 			required: true,
@@ -82,50 +89,71 @@ export default {
 			type: Array,
 			required: true,
 		},
+
+		previousMessageId: {
+			type: [String, Number],
+			default: 0,
+		},
+
+		nextMessageId: {
+			type: [String, Number],
+			default: 0,
+		},
+
+		// FIXME: read from messagesStore as this is the same value for all
+		lastReadMessageId: {
+			type: [String, Number],
+			default: 0,
+		},
 	},
 
 	computed: {
 		/**
 		 * The message actor type.
-		 * @returns {string}
+		 *
+		 * @return {string}
 		 */
 		actorType() {
 			return this.messages[0].actorType
 		},
 		/**
 		 * The message actor id.
-		 * @returns {string}
+		 *
+		 * @return {string}
 		 */
 		actorId() {
 			return this.messages[0].actorId
 		},
 		/**
 		 * The message date.
-		 * @returns {string}
+		 *
+		 * @return {string}
 		 */
 		dateSeparator() {
 			return this.messages[0].dateSeparator || ''
 		},
 		/**
 		 * The message actor display name.
-		 * @returns {string}
+		 *
+		 * @return {string}
 		 */
 		actorDisplayName() {
 			const displayName = this.messages[0].actorDisplayName.trim()
 
-			if (this.actorType === 'guests') {
+			if (this.actorType === ATTENDEE.ACTOR_TYPE.GUESTS) {
 				return this.$store.getters.getGuestName(this.token, this.actorId)
 			}
 
 			if (displayName === '') {
-				return t('spreed', '[Unknown username]')
+				return t('spreed', 'Deleted user')
 			}
 
 			return displayName
 		},
 		/**
 		 * Whether the given message is a system message
-		 * @returns {bool}
+		 *
+		 * @return {boolean}
 		 */
 		isSystemMessage() {
 			return this.messages[0].systemMessage.length !== 0
@@ -141,25 +169,17 @@ export default {
 	&__date-header {
 		display: block;
 		text-align: center;
-
-		margin: 40px 15px 0;
-		border-top: 1px solid var(--color-border);
 		padding-top: 20px;
 		position: relative;
-
+		margin: 20px 0;
 		.date {
+			margin-right: $clickable-area * 2;
 			content: attr(data-date);
-			position: absolute;
-			top: 0;
+			padding: 4px 12px;
 			left: 50%;
-			transform: translateX(-50%) translateY(-50%);
-			padding: 0 7px 0 7px;
-
-			text-align: center;
-			white-space: nowrap;
-
 			color: var(--color-text-maxcontrast);
-			background-color: var(--color-main-background);
+			background-color: var(--color-background-dark);
+			border-radius: var(--border-radius-pill);
 		}
 	}
 }
@@ -169,6 +189,9 @@ export default {
 	display: flex;
 	margin: auto;
 	padding: 0;
+	&--system {
+		padding-left: $clickable-area + 8px;
+	}
 	&:focus {
 		background-color: rgba(47, 47, 47, 0.068);
 	}
@@ -179,6 +202,7 @@ export default {
 	display: flex;
 	padding: 8px 0 8px 0;
 	flex-direction: column;
+	width: 100%;
 	&__avatar {
 		position: sticky;
 		top: 0;

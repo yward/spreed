@@ -1,7 +1,7 @@
 /**
  * @copyright Copyright (c) 2020 Daniel Calviño Sánchez <danxuliu@gmail.com>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -19,7 +19,9 @@
  */
 
 import Vue from 'vue'
+import VueObserveVisibility from 'vue-observe-visibility'
 import PublicShareSidebar from './PublicShareSidebar'
+import './init'
 
 // Store
 import Vuex from 'vuex'
@@ -32,6 +34,16 @@ import { getRequestToken } from '@nextcloud/auth'
 // Directives
 import { translate, translatePlural } from '@nextcloud/l10n'
 import VueShortKey from 'vue-shortkey'
+import vOutsideEvents from 'vue-outside-events'
+
+// Styles
+import '@nextcloud/dialogs/styles/toast.scss'
+import 'leaflet/dist/leaflet.css'
+
+// Leaflet icon patch
+import 'leaflet-defaulticon-compatibility/dist/leaflet-defaulticon-compatibility.webpack.css' // Re-uses images from ~leaflet package
+// eslint-disable-next-line
+import 'leaflet-defaulticon-compatibility'
 
 // CSP config for webpack dynamic chunk loading
 // eslint-disable-next-line
@@ -51,13 +63,18 @@ Vue.prototype.OCA = OCA
 
 Vue.use(Vuex)
 Vue.use(VueShortKey, { prevent: ['input', 'textarea', 'div'] })
+Vue.use(vOutsideEvents)
+Vue.use(VueObserveVisibility)
 
+/**
+ *
+ */
 function adjustLayout() {
-	document.querySelector('#app-content').append(document.querySelector('footer'))
+	document.querySelector('#app-content').appendChild(document.querySelector('footer'))
 
 	const talkSidebarElement = document.createElement('div')
 	talkSidebarElement.setAttribute('id', 'talk-sidebar')
-	document.querySelector('#content').append(talkSidebarElement)
+	document.querySelector('#content').appendChild(talkSidebarElement)
 }
 
 adjustLayout()
@@ -75,6 +92,9 @@ if (window.innerWidth > 1111) {
 	sidebarState.isOpen = true
 }
 
+/**
+ *
+ */
 function addTalkSidebarTrigger() {
 	const talkSidebarTriggerElement = document.createElement('button')
 	talkSidebarTriggerElement.setAttribute('id', 'talk-sidebar-trigger')
@@ -88,14 +108,17 @@ function addTalkSidebarTrigger() {
 	if (!document.querySelector('.header-right')) {
 		const headerRightElement = document.createElement('div')
 		headerRightElement.setAttribute('class', 'header-right')
-		document.querySelector('#header').append(headerRightElement)
+		document.querySelector('#header').appendChild(headerRightElement)
 	}
 
-	document.querySelector('.header-right').append(talkSidebarTriggerElement)
+	document.querySelector('.header-right').appendChild(talkSidebarTriggerElement)
 }
 
 addTalkSidebarTrigger()
 
+/**
+ *
+ */
 function getShareToken() {
 	const shareTokenElement = document.getElementById('sharingToken')
 	return shareTokenElement.value

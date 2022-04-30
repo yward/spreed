@@ -27,6 +27,9 @@ use OCA\Talk\Config;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
 use OCA\Talk\Exceptions\RoomNotFoundException;
 use OCA\Talk\Manager;
+use OCA\Talk\MatterbridgeManager;
+use OCA\Talk\Model\Attendee;
+use OCA\Talk\Participant;
 use OCA\Talk\Room;
 use OCP\Collaboration\AutoComplete\AutoCompleteEvent;
 use OCP\Collaboration\AutoComplete\IManager;
@@ -35,19 +38,13 @@ use OCP\IUser;
 use OCP\IUserManager;
 
 class Listener {
-
-	/** @var Manager */
-	protected $manager;
-	/** @var IUserManager */
-	protected $userManager;
-	/** @var Config */
-	protected $config;
+	protected Manager $manager;
+	protected IUserManager $userManager;
+	protected Config $config;
 	/** @var string[] */
-	protected $allowedGroupIds = [];
-	/** @var string */
-	protected $roomToken;
-	/** @var Room */
-	protected $room;
+	protected array $allowedGroupIds = [];
+	protected string $roomToken;
+	protected ?Room $room = null;
 
 	public function __construct(Manager $manager,
 								IUserManager $userManager,
@@ -58,20 +55,23 @@ class Listener {
 	}
 
 	public static function register(IEventDispatcher $dispatcher): void {
-		$dispatcher->addListener(IManager::class . '::filterResults', static function (AutoCompleteEvent $event) {
-			/** @var self $listener */
-			$listener = \OC::$server->query(self::class);
+		$dispatcher->addListener(IManager::class . '::filterResults', [self::class, 'filterNonListableMesssages']);
+	}
 
-			if ($event->getItemType() !== 'call') {
-				return;
-			}
+	public static function filterNonListableMesssages(AutoCompleteEvent $event): void {
+		/** @var self $listener */
+		$listener = \OC::$server->get(self::class);
 
-			$event->setResults($listener->filterUsersAndGroupsWithoutTalk($event->getResults()));
+		if ($event->getItemType() !== 'call') {
+			return;
+		}
 
-			if ($event->getItemId() !== 'new') {
-				$event->setResults($listener->filterExistingParticipants($event->getItemId(), $event->getResults()));
-			}
-		});
+		$event->setResults($listener->filterUsersAndGroupsWithoutTalk($event->getResults()));
+
+		$event->setResults($listener->filterBridgeBot($event->getResults()));
+		if ($event->getItemId() !== 'new') {
+			$event->setResults($listener->filterExistingParticipants($event->getItemId(), $event->getResults()));
+		}
 	}
 
 	protected function filterUsersAndGroupsWithoutTalk(array $results): array {
@@ -81,29 +81,40 @@ class Listener {
 		}
 
 		if (!empty($results['groups'])) {
-			$results['groups'] = array_filter($results['groups'], [$this, 'filterGroupResult']);
+			$results['groups'] = array_filter($results['groups'], [$this, 'filterBlockedGroupResult']);
 		}
 		if (!empty($results['exact']['groups'])) {
-			$results['exact']['groups'] = array_filter($results['exact']['groups'], [$this, 'filterGroupResult']);
+			$results['exact']['groups'] = array_filter($results['exact']['groups'], [$this, 'filterBlockedGroupResult']);
 		}
 
 		if (!empty($results['users'])) {
-			$results['users'] = array_filter($results['users'], [$this, 'filterUserResult']);
+			$results['users'] = array_filter($results['users'], [$this, 'filterBlockedUserResult']);
 		}
 		if (!empty($results['exact']['users'])) {
-			$results['exact']['users'] = array_filter($results['exact']['users'], [$this, 'filterUserResult']);
+			$results['exact']['users'] = array_filter($results['exact']['users'], [$this, 'filterBlockedUserResult']);
 		}
 
 		return $results;
 	}
 
-	protected function filterUserResult(array $result): bool {
+	protected function filterBlockedUserResult(array $result): bool {
 		$user = $this->userManager->get($result['value']['shareWith']);
 		return $user instanceof IUser && !$this->config->isDisabledForUser($user);
 	}
 
-	protected function filterGroupResult(array $result): bool {
+	protected function filterBlockedGroupResult(array $result): bool {
 		return \in_array($result['value']['shareWith'], $this->allowedGroupIds, true);
+	}
+
+	protected function filterBridgeBot(array $results): array {
+		if (!empty($results['users'])) {
+			$results['users'] = array_filter($results['users'], [$this, 'filterBridgeBotUserResult']);
+		}
+		if (!empty($results['exact']['users'])) {
+			$results['exact']['users'] = array_filter($results['exact']['users'], [$this, 'filterBridgeBotUserResult']);
+		}
+
+		return $results;
 	}
 
 	protected function filterExistingParticipants(string $token, array $results): array {
@@ -113,21 +124,47 @@ class Listener {
 			return $results;
 		}
 
+		if (!empty($results['groups'])) {
+			$results['groups'] = array_filter($results['groups'], [$this, 'filterParticipantGroupResult']);
+		}
+		if (!empty($results['exact']['groups'])) {
+			$results['exact']['groups'] = array_filter($results['exact']['groups'], [$this, 'filterParticipantGroupResult']);
+		}
+
 		if (!empty($results['users'])) {
-			$results['users'] = array_filter($results['users'], [$this, 'filterParticipantResult']);
+			$results['users'] = array_filter($results['users'], [$this, 'filterParticipantUserResult']);
 		}
 		if (!empty($results['exact']['users'])) {
-			$results['exact']['users'] = array_filter($results['exact']['users'], [$this, 'filterParticipantResult']);
+			$results['exact']['users'] = array_filter($results['exact']['users'], [$this, 'filterParticipantUserResult']);
 		}
 
 		return $results;
 	}
 
-	protected function filterParticipantResult(array $result): bool {
+	protected function filterBridgeBotUserResult(array $result): bool {
+		return $result['value']['shareWith'] !== MatterbridgeManager::BRIDGE_BOT_USERID;
+	}
+
+	protected function filterParticipantUserResult(array $result): bool {
 		$userId = $result['value']['shareWith'];
 
 		try {
-			$this->room->getParticipant($userId);
+			$participant = $this->room->getParticipant($userId, false);
+			if ($participant->getAttendee()->getParticipantType() === Participant::USER_SELF_JOINED) {
+				// do list self-joined users so they can be added as permanent participants by moderators
+				return true;
+			}
+			return false;
+		} catch (ParticipantNotFoundException $e) {
+			return true;
+		}
+	}
+
+	protected function filterParticipantGroupResult(array $result): bool {
+		$groupId = $result['value']['shareWith'];
+
+		try {
+			$this->room->getParticipantByActor(Attendee::ACTOR_GROUPS, $groupId);
 			return false;
 		} catch (ParticipantNotFoundException $e) {
 			return true;

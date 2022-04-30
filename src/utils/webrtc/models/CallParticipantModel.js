@@ -2,7 +2,7 @@
  *
  * @copyright Copyright (c) 2019, Daniel Calviño Sánchez (danxuliu@gmail.com)
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -21,6 +21,8 @@
 
 import attachMediaStream from 'attachmediastream'
 
+import EmitterMixin from '../../EmitterMixin'
+
 export const ConnectionState = {
 	NEW: 'new',
 	CHECKING: 'checking',
@@ -33,26 +35,49 @@ export const ConnectionState = {
 	CLOSED: 'closed',
 }
 
+/**
+ * @param {object} options The model
+ * @param {string} options.peerId The peerId of the participant
+ * @param {object} options.webRtc The WebRTC connection to the participant
+ */
 export default function CallParticipantModel(options) {
+
+	this._superEmitterMixin()
 
 	this.attributes = {
 		peerId: null,
+		nextcloudSessionId: null,
+		peer: null,
+		screenPeer: null,
 		// "undefined" is used for values not known yet; "null" or "false"
 		// are used for known but negative/empty values.
 		userId: undefined,
 		name: undefined,
+		internal: undefined,
 		connectionState: ConnectionState.NEW,
+		negotiating: false,
+		connecting: false,
+		initialConnection: true,
+		connectedAtLeastOnce: false,
 		stream: null,
 		// The audio element is part of the model to ensure that it can be
 		// played if needed even if there is no view for it.
 		audioElement: null,
 		audioAvailable: undefined,
 		speaking: undefined,
+		// "videoBlocked" is "true" only if the video is blocked and it would
+		// have been available in the remote peer if not blocked.
+		videoBlocked: undefined,
 		videoAvailable: undefined,
 		screen: null,
+		// The audio element is part of the model to ensure that it can be
+		// played if needed even if there is no view for it.
+		screenAudioElement: null,
+		raisedHand: {
+			state: false,
+			timestamp: null,
+		},
 	}
-
-	this._handlers = []
 
 	this.set('peerId', options.peerId)
 
@@ -64,7 +89,10 @@ export default function CallParticipantModel(options) {
 	this._handleMuteBound = this._handleMute.bind(this)
 	this._handleUnmuteBound = this._handleUnmute.bind(this)
 	this._handleExtendedIceConnectionStateChangeBound = this._handleExtendedIceConnectionStateChange.bind(this)
+	this._handleSignalingStateChangeBound = this._handleSignalingStateChange.bind(this)
 	this._handleChannelMessageBound = this._handleChannelMessage.bind(this)
+	this._handleRaisedHandBound = this._handleRaisedHand.bind(this)
+	this._handleRemoteVideoBlockedBound = this._handleRemoteVideoBlocked.bind(this)
 
 	this._webRtc.on('peerStreamAdded', this._handlePeerStreamAddedBound)
 	this._webRtc.on('peerStreamRemoved', this._handlePeerStreamRemovedBound)
@@ -72,99 +100,83 @@ export default function CallParticipantModel(options) {
 	this._webRtc.on('mute', this._handleMuteBound)
 	this._webRtc.on('unmute', this._handleUnmuteBound)
 	this._webRtc.on('channelMessage', this._handleChannelMessageBound)
-
+	this._webRtc.on('raisedHand', this._handleRaisedHandBound)
 }
 
 CallParticipantModel.prototype = {
 
-	get: function(key) {
+	destroy() {
+		if (this.get('peer')) {
+			this.get('peer').off('extendedIceConnectionStateChange', this._handleExtendedIceConnectionStateChangeBound)
+			this.get('peer').off('signalingStateChange', this._handleSignalingStateChangeBound)
+			this.get('peer').off('remoteVideoBlocked', this._handleRemoteVideoBlockedBound)
+		}
+
+		this._webRtc.off('peerStreamAdded', this._handlePeerStreamAddedBound)
+		this._webRtc.off('peerStreamRemoved', this._handlePeerStreamRemovedBound)
+		this._webRtc.off('nick', this._handleNickBound)
+		this._webRtc.off('mute', this._handleMuteBound)
+		this._webRtc.off('unmute', this._handleUnmuteBound)
+		this._webRtc.off('channelMessage', this._handleChannelMessageBound)
+		this._webRtc.off('raisedHand', this._handleRaisedHandBound)
+	},
+
+	get(key) {
 		return this.attributes[key]
 	},
 
-	set: function(key, value) {
+	set(key, value) {
+		if (this.attributes[key] === value) {
+			return
+		}
+
 		this.attributes[key] = value
 
 		this._trigger('change:' + key, [value])
 	},
 
-	on: function(event, handler) {
-		if (!this._handlers.hasOwnProperty(event)) {
-			this._handlers[event] = [handler]
-		} else {
-			this._handlers[event].push(handler)
-		}
-	},
-
-	off: function(event, handler) {
-		const handlers = this._handlers[event]
-		if (!handlers) {
-			return
-		}
-
-		const index = handlers.indexOf(handler)
-		if (index !== -1) {
-			handlers.splice(index, 1)
-		}
-	},
-
-	_trigger: function(event, args) {
-		let handlers = this._handlers[event]
-		if (!handlers) {
-			return
-		}
-
-		if (!args) {
-			args = []
-		}
-
-		args.unshift(this)
-
-		handlers = handlers.slice(0)
-		for (let i = 0; i < handlers.length; i++) {
-			const handler = handlers[i]
-			handler.apply(handler, args)
-		}
-	},
-
-	_handlePeerStreamAdded: function(peer) {
-		if (this._peer === peer) {
-			this.set('stream', this._peer.stream || null)
+	_handlePeerStreamAdded(peer) {
+		if (this.get('peer') === peer) {
+			this.set('stream', this.get('peer').stream || null)
 			this.set('audioElement', attachMediaStream(this.get('stream'), null, { audio: true }))
 			this.get('audioElement').muted = !this.get('audioAvailable')
 
 			// "peer.nick" is set only for users and when the MCU is not used.
-			if (this._peer.nick !== undefined) {
-				this.set('name', this._peer.nick)
+			if (this.get('peer').nick !== undefined) {
+				this.set('name', this.get('peer').nick)
 			}
-		} else if (this._screenPeer === peer) {
-			this.set('screen', this._screenPeer.stream || null)
+		} else if (this.get('screenPeer') === peer) {
+			this.set('screen', this.get('screenPeer').stream || null)
+			this.set('screenAudioElement', attachMediaStream(this.get('screen'), null, { audio: true }))
 		}
 	},
 
-	_handlePeerStreamRemoved: function(peer) {
-		if (this._peer === peer) {
+	_handlePeerStreamRemoved(peer) {
+		if (this.get('peer') === peer) {
 			this.get('audioElement').srcObject = null
 			this.set('audioElement', null)
 			this.set('stream', null)
 			this.set('audioAvailable', undefined)
 			this.set('speaking', undefined)
 			this.set('videoAvailable', undefined)
-		} else if (this._screenPeer === peer) {
+		} else if (this.get('screenPeer') === peer) {
+			this.get('screenAudioElement').srcObject = null
+			this.set('screenAudioElement', null)
 			this.set('screen', null)
 		}
 	},
 
-	_handleNick: function(data) {
-		if (!this._peer || this._peer.id !== data.id) {
+	_handleNick(data) {
+		// The nick could be changed even if there is no Peer object.
+		if (this.get('peerId') !== data.id) {
 			return
 		}
 
-		this.set('userId', data.userid || null)
 		this.set('name', data.name || null)
 	},
 
-	_handleMute: function(data) {
-		if (!this._peer || this._peer.id !== data.id) {
+	_handleMute(data) {
+		if (!this.get('peer') || this.get('peer').id !== data.id) {
 			return
 		}
 
@@ -179,23 +191,23 @@ CallParticipantModel.prototype = {
 		}
 	},
 
-	forceMute: function() {
-		if (!this._peer) {
+	forceMute() {
+		if (!this.get('peer')) {
 			return
 		}
 
 		this._webRtc.sendToAll('control', {
 			action: 'forceMute',
-			peerId: this._peer.id,
+			peerId: this.get('peer').id,
 		})
 
 		// Mute locally too, as even when sending to all the sender will not
 		// receive the message.
-		this._handleMute({ id: this._peer.id })
+		this._handleMute({ id: this.get('peer').id })
 	},
 
-	_handleUnmute: function(data) {
-		if (!this._peer || this._peer.id !== data.id) {
+	_handleUnmute(data) {
+		if (!this.get('peer') || this.get('peer').id !== data.id) {
 			return
 		}
 
@@ -209,12 +221,12 @@ CallParticipantModel.prototype = {
 		}
 	},
 
-	_handleChannelMessage: function(peer, label, data) {
-		if (!this._peer || this._peer.id !== peer.id) {
+	_handleChannelMessage(peer, label, data) {
+		if (!this.get('peer') || this.get('peer').id !== peer.id) {
 			return
 		}
 
-		if (label !== 'status') {
+		if (label !== 'status' && label !== 'JanusDataChannel') {
 			return
 		}
 
@@ -225,63 +237,108 @@ CallParticipantModel.prototype = {
 		}
 	},
 
-	setPeer: function(peer) {
+	_handleRaisedHand(data) {
+		// The hand could be raised even if there is no Peer object.
+		if (this.get('peerId') !== data.id) {
+			return
+		}
+
+		this.set('raisedHand', data.raised)
+	},
+
+	setPeer(peer) {
 		if (peer && this.get('peerId') !== peer.id) {
 			console.warn('Mismatch between stored peer ID and ID of given peer: ', this.get('peerId'), peer.id)
 		}
 
-		if (this._peer) {
-			this._peer.off('extendedIceConnectionStateChange', this._handleExtendedIceConnectionStateChangeBound)
+		if (this.get('peer')) {
+			this.get('peer').off('extendedIceConnectionStateChange', this._handleExtendedIceConnectionStateChangeBound)
+			this.get('peer').off('signalingStateChange', this._handleSignalingStateChangeBound)
+			this.get('peer').off('remoteVideoBlocked', this._handleRemoteVideoBlockedBound)
 		}
 
-		this._peer = peer
+		this.set('peer', peer)
 
 		// Special case when the participant has no streams.
-		if (!this._peer) {
+		if (!this.get('peer')) {
 			this.set('connectionState', ConnectionState.COMPLETED)
+			this.set('negotiating', false)
+			this.set('connecting', false)
 			this.set('audioAvailable', false)
 			this.set('speaking', false)
 			this.set('videoAvailable', false)
+			this.set('videoBlocked', false)
 
 			return
 		}
 
 		// Reset state that depends on the Peer object.
-		this._handleExtendedIceConnectionStateChange(this._peer.pc.iceConnectionState)
-		this._handlePeerStreamAdded(this._peer)
+		if (this.get('peer').pc.connectionState === 'failed' && this.get('peer').pc.iceConnectionState === 'disconnected') {
+			// Work around Chromium bug where "iceConnectionState" gets stuck as
+			// "disconnected" even if the connection already failed.
+			this._handleExtendedIceConnectionStateChange(this.get('peer').pc.connectionState)
+		} else {
+			this._handleExtendedIceConnectionStateChange(this.get('peer').pc.iceConnectionState)
+		}
+		this._handleSignalingStateChange(this.get('peer').pc.signalingState)
+		this._handlePeerStreamAdded(this.get('peer'))
+		this._handleRemoteVideoBlocked(undefined)
 
-		this._peer.on('extendedIceConnectionStateChange', this._handleExtendedIceConnectionStateChangeBound)
+		this.get('peer').on('extendedIceConnectionStateChange', this._handleExtendedIceConnectionStateChangeBound)
+		this.get('peer').on('signalingStateChange', this._handleSignalingStateChangeBound)
+		this.get('peer').on('remoteVideoBlocked', this._handleRemoteVideoBlockedBound)
+
+		// Set expected state in Peer object.
+		if (this._simulcastVideoQuality !== undefined) {
+			this.setSimulcastVideoQuality(this._simulcastVideoQuality)
+		}
+		if (this._videoBlocked !== undefined) {
+			this.setVideoBlocked(this._videoBlocked)
+		}
 	},
 
-	_handleExtendedIceConnectionStateChange: function(extendedIceConnectionState) {
+	_handleExtendedIceConnectionStateChange(extendedIceConnectionState) {
 		// Ensure that the name is set, as when the MCU is not used it will
 		// not be set later for registered users without microphone nor
 		// camera.
 		const setNameForUserFromPeerNick = function() {
-			if (this._peer.nick !== undefined) {
-				this.set('name', this._peer.nick)
+			if (this.get('peer').nick !== undefined) {
+				this.set('name', this.get('peer').nick)
 			}
 		}.bind(this)
+
+		// "connecting" state is not changed when entering the "disconnected"
+		// state, as it can be entered while still connecting (if done from
+		// "checking") or once already connected (from "connected" or
+		// "completed").
 
 		switch (extendedIceConnectionState) {
 		case 'new':
 			this.set('connectionState', ConnectionState.NEW)
+			this.set('connecting', true)
 			this.set('audioAvailable', undefined)
 			this.set('speaking', undefined)
 			this.set('videoAvailable', undefined)
 			break
 		case 'checking':
 			this.set('connectionState', ConnectionState.CHECKING)
+			this.set('connecting', true)
 			this.set('audioAvailable', undefined)
 			this.set('speaking', undefined)
 			this.set('videoAvailable', undefined)
 			break
 		case 'connected':
 			this.set('connectionState', ConnectionState.CONNECTED)
+			this.set('connecting', false)
+			this.set('initialConnection', false)
+			this.set('connectedAtLeastOnce', true)
 			setNameForUserFromPeerNick()
 			break
 		case 'completed':
 			this.set('connectionState', ConnectionState.COMPLETED)
+			this.set('connecting', false)
+			this.set('initialConnection', false)
+			this.set('connectedAtLeastOnce', true)
 			setNameForUserFromPeerNick()
 			break
 		case 'disconnected':
@@ -292,31 +349,92 @@ CallParticipantModel.prototype = {
 			break
 		case 'failed':
 			this.set('connectionState', ConnectionState.FAILED)
+			this.set('connecting', false)
+			this.set('initialConnection', false)
 			break
 		case 'failed-no-restart':
 			this.set('connectionState', ConnectionState.FAILED_NO_RESTART)
+			this.set('connecting', false)
+			this.set('initialConnection', false)
 			break
 		case 'closed':
 			this.set('connectionState', ConnectionState.CLOSED)
+			this.set('connecting', false)
+			this.set('initialConnection', false)
 			break
 		default:
 			console.error('Unexpected (extended) ICE connection state: ', extendedIceConnectionState)
 		}
 	},
 
-	setScreenPeer: function(screenPeer) {
-		if (this.get('peerId') !== screenPeer.id) {
+	_handleSignalingStateChange(signalingState) {
+		this.set('negotiating', signalingState !== 'stable' && signalingState !== 'closed')
+	},
+
+	setScreenPeer(screenPeer) {
+		if (screenPeer && this.get('peerId') !== screenPeer.id) {
 			console.warn('Mismatch between stored peer ID and ID of given screen peer: ', this.get('peerId'), screenPeer.id)
 		}
 
-		this._screenPeer = screenPeer
+		this.set('screenPeer', screenPeer)
 
 		// Reset state that depends on the screen Peer object.
-		this._handlePeerStreamAdded(this._screenPeer)
+		this._handlePeerStreamAdded(this.get('screenPeer'))
+
+		// Set expected state in screen Peer object.
+		if (this._simulcastScreenQuality !== undefined) {
+			this.setSimulcastScreenQuality(this._simulcastScreenQuality)
+		}
 	},
 
-	setUserId: function(userId) {
+	setUserId(userId) {
 		this.set('userId', userId)
 	},
 
+	setNextcloudSessionId(nextcloudSessionId) {
+		this.set('nextcloudSessionId', nextcloudSessionId)
+	},
+
+	setVideoBlocked(videoBlocked) {
+		// Store value to be able to apply it again if a new Peer object is set.
+		this._videoBlocked = videoBlocked
+
+		if (!this.get('peer')) {
+			return
+		}
+
+		this.get('peer').setRemoteVideoBlocked(videoBlocked)
+	},
+
+	_handleRemoteVideoBlocked(remoteVideoBlocked) {
+		this.set('videoBlocked', remoteVideoBlocked)
+	},
+
+	setSimulcastVideoQuality(simulcastVideoQuality) {
+		// Store value to be able to apply it again if a new Peer object is set.
+		this._simulcastVideoQuality = simulcastVideoQuality
+
+		if (!this.get('peer') || !this.get('peer').enableSimulcast) {
+			return
+		}
+
+		// Use same quality for simulcast and temporal layer.
+		this.get('peer').selectSimulcastStream(simulcastVideoQuality, simulcastVideoQuality)
+	},
+
+	setSimulcastScreenQuality(simulcastScreenQuality) {
+		// Store value to be able to apply it again if a new screen Peer object
+		// is set.
+		this._simulcastScreenQuality = simulcastScreenQuality
+
+		if (!this.get('screenPeer') || !this.get('screenPeer').enableSimulcast) {
+			return
+		}
+
+		// Use same quality for simulcast and temporal layer.
+		this.get('screenPeer').selectSimulcastStream(simulcastScreenQuality, simulcastScreenQuality)
+	},
+
 }
+
+EmitterMixin.apply(CallParticipantModel.prototype)

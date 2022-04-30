@@ -28,10 +28,19 @@ use OCA\Talk\Chat\AutoComplete\SearchPlugin;
 use OCA\Talk\Chat\AutoComplete\Sorter;
 use OCA\Talk\Chat\ChatManager;
 use OCA\Talk\Chat\MessageParser;
+use OCA\Talk\Chat\ReactionManager;
 use OCA\Talk\GuestManager;
+use OCA\Talk\MatterbridgeManager;
+use OCA\Talk\Model\Attachment;
+use OCA\Talk\Model\Attendee;
 use OCA\Talk\Model\Message;
+use OCA\Talk\Model\Session;
+use OCA\Talk\Participant;
 use OCA\Talk\Room;
-use OCA\Talk\TalkSession;
+use OCA\Talk\Service\AttachmentService;
+use OCA\Talk\Service\ParticipantService;
+use OCA\Talk\Service\SessionService;
+use OCP\App\IAppManager;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\DataResponse;
 use OCP\AppFramework\Utility\ITimeFactory;
@@ -40,79 +49,138 @@ use OCP\Collaboration\Collaborators\ISearchResult;
 use OCP\Comments\IComment;
 use OCP\Comments\MessageTooLongException;
 use OCP\Comments\NotFoundException;
+use OCP\EventDispatcher\IEventDispatcher;
 use OCP\IL10N;
 use OCP\IRequest;
 use OCP\IUserManager;
+use OCP\RichObjectStrings\InvalidObjectExeption;
+use OCP\RichObjectStrings\IValidator;
+use OCP\Security\ITrustedDomainHelper;
+use OCP\Share\Exceptions\ShareNotFound;
+use OCP\User\Events\UserLiveStatusEvent;
+use OCP\UserStatus\IManager as IUserStatusManager;
+use OCP\UserStatus\IUserStatus;
 
 class ChatController extends AEnvironmentAwareController {
-
-	/** @var string */
-	private $userId;
-
-	/** @var IUserManager */
-	private $userManager;
-
-	/** @var TalkSession */
-	private $session;
-
-	/** @var ChatManager */
-	private $chatManager;
-
-	/** @var GuestManager */
-	private $guestManager;
-
+	private ?string $userId;
+	private IUserManager $userManager;
+	private IAppManager $appManager;
+	private ChatManager $chatManager;
+	private ReactionManager $reactionManager;
+	private ParticipantService $participantService;
+	private SessionService $sessionService;
+	protected AttachmentService $attachmentService;
+	private GuestManager $guestManager;
 	/** @var string[] */
-	protected $guestNames;
-
-	/** @var MessageParser */
-	private $messageParser;
-
-	/** @var IManager */
-	private $autoCompleteManager;
-
-	/** @var SearchPlugin */
-	private $searchPlugin;
-
-	/** @var ISearchResult */
-	private $searchResult;
-
-	/** @var IL10N */
-	private $l;
-	/** @var ITimeFactory */
-	protected $timeFactory;
+	protected array $guestNames;
+	private MessageParser $messageParser;
+	private IManager $autoCompleteManager;
+	private IUserStatusManager $statusManager;
+	protected MatterbridgeManager $matterbridgeManager;
+	private SearchPlugin $searchPlugin;
+	private ISearchResult $searchResult;
+	protected ITimeFactory $timeFactory;
+	protected IEventDispatcher $eventDispatcher;
+	protected IValidator $richObjectValidator;
+	protected ITrustedDomainHelper $trustedDomainHelper;
+	private IL10N $l;
 
 	public function __construct(string $appName,
 								?string $UserId,
 								IRequest $request,
 								IUserManager $userManager,
-								TalkSession $session,
+								IAppManager $appManager,
 								ChatManager $chatManager,
+								ReactionManager $reactionManager,
+								ParticipantService $participantService,
+								SessionService $sessionService,
+								AttachmentService $attachmentService,
 								GuestManager $guestManager,
 								MessageParser $messageParser,
 								IManager $autoCompleteManager,
+								IUserStatusManager $statusManager,
+								MatterbridgeManager $matterbridgeManager,
 								SearchPlugin $searchPlugin,
 								ISearchResult $searchResult,
 								ITimeFactory $timeFactory,
+								IEventDispatcher $eventDispatcher,
+								IValidator $richObjectValidator,
+								ITrustedDomainHelper $trustedDomainHelper,
 								IL10N $l) {
 		parent::__construct($appName, $request);
 
 		$this->userId = $UserId;
 		$this->userManager = $userManager;
-		$this->session = $session;
+		$this->appManager = $appManager;
 		$this->chatManager = $chatManager;
+		$this->reactionManager = $reactionManager;
+		$this->participantService = $participantService;
+		$this->sessionService = $sessionService;
+		$this->attachmentService = $attachmentService;
 		$this->guestManager = $guestManager;
 		$this->messageParser = $messageParser;
 		$this->autoCompleteManager = $autoCompleteManager;
+		$this->statusManager = $statusManager;
+		$this->matterbridgeManager = $matterbridgeManager;
 		$this->searchPlugin = $searchPlugin;
 		$this->searchResult = $searchResult;
 		$this->timeFactory = $timeFactory;
+		$this->eventDispatcher = $eventDispatcher;
+		$this->richObjectValidator = $richObjectValidator;
+		$this->trustedDomainHelper = $trustedDomainHelper;
 		$this->l = $l;
+	}
+
+	protected function getActorInfo(string $actorDisplayName = ''): array {
+		if ($this->userId === null) {
+			$actorType = Attendee::ACTOR_GUESTS;
+			$actorId = $this->participant->getAttendee()->getActorId();
+
+			if ($actorDisplayName) {
+				$this->guestManager->updateName($this->room, $this->participant, $actorDisplayName);
+			}
+		} elseif ($this->userId === MatterbridgeManager::BRIDGE_BOT_USERID && $actorDisplayName) {
+			$actorType = Attendee::ACTOR_BRIDGED;
+			$actorId = str_replace(["/", "\""], "", $actorDisplayName);
+		} else {
+			$actorType = Attendee::ACTOR_USERS;
+			$actorId = $this->userId;
+		}
+
+		return [$actorType, $actorId];
+	}
+
+	public function parseCommentToResponse(IComment $comment, Message $parentMessage = null): DataResponse {
+		$chatMessage = $this->messageParser->createMessage($this->room, $this->participant, $comment, $this->l);
+		$this->messageParser->parseMessage($chatMessage);
+
+		if (!$chatMessage->getVisibility()) {
+			$response = new DataResponse([], Http::STATUS_CREATED);
+			if ($this->participant->getAttendee()->getReadPrivacy() === Participant::PRIVACY_PUBLIC) {
+				$response->addHeader('X-Chat-Last-Common-Read', $this->chatManager->getLastCommonReadMessage($this->room));
+			}
+			return $response;
+		}
+
+		$this->participantService->updateLastReadMessage($this->participant, (int) $comment->getId());
+
+		$data = $chatMessage->toArray();
+		if ($parentMessage instanceof Message) {
+			$data['parent'] = $parentMessage->toArray();
+		}
+
+		$response = new DataResponse($data, Http::STATUS_CREATED);
+		if ($this->participant->getAttendee()->getReadPrivacy() === Participant::PRIVACY_PUBLIC) {
+			$response->addHeader('X-Chat-Last-Common-Read', $this->chatManager->getLastCommonReadMessage($this->room));
+		}
+		return $response;
 	}
 
 	/**
 	 * @PublicPage
 	 * @RequireParticipant
 	 * @RequireReadWriteConversation
+	 * @RequirePermissions(permissions=chat)
 	 * @RequireModeratorOrNoLobby
 	 *
 	 * Sends a new chat message to the given room.
@@ -129,24 +197,7 @@ class ChatController extends AEnvironmentAwareController {
 	 *         found".
 	 */
 	public function sendMessage(string $message, string $actorDisplayName = '', string $referenceId = '', int $replyTo = 0): DataResponse {
-		if ($this->userId === null) {
-			$actorType = 'guests';
-			$sessionId = $this->session->getSessionForRoom($this->room->getToken());
-			// The character limit for actorId is 64, but the spreed-session is
-			// 256 characters long, so it has to be hashed to get an ID that
-			// fits (except if there is no session, as the actorId should be
-			// empty in that case but sha1('') would generate a hash too
-			// instead of returning an empty string).
-			$actorId = $sessionId ? sha1($sessionId) : 'failed-to-get-session';
-
-			if ($sessionId && $actorDisplayName) {
-				$this->guestManager->updateName($this->room, $this->participant, $actorDisplayName);
-			}
-		} else {
-			$actorType = 'users';
-			$actorId = $this->userId;
-		}
-
+		[$actorType, $actorId] = $this->getActorInfo($actorDisplayName);
 		if (!$actorId) {
 			return new DataResponse([], Http::STATUS_NOT_FOUND);
 		}
@@ -167,7 +218,7 @@ class ChatController extends AEnvironmentAwareController {
 			}
 		}
 
-		$this->room->ensureOneToOneRoomIsFilled();
+		$this->participantService->ensureOneToOneRoomIsFilled($this->room);
 		$creationDateTime = $this->timeFactory->getDateTime('now', new \DateTimeZone('UTC'));
 
 		try {
@@ -178,20 +229,79 @@ class ChatController extends AEnvironmentAwareController {
 			return new DataResponse([], Http::STATUS_BAD_REQUEST);
 		}
 
-		$chatMessage = $this->messageParser->createMessage($this->room, $this->participant, $comment, $this->l);
-		$this->messageParser->parseMessage($chatMessage);
+		return $this->parseCommentToResponse($comment, $parentMessage);
+	}
 
-		if (!$chatMessage->getVisibility()) {
-			return new DataResponse([], Http::STATUS_CREATED);
+	/**
+	 * @PublicPage
+	 * @RequireParticipant
+	 * @RequireReadWriteConversation
+	 * @RequirePermissions(permissions=chat)
+	 * @RequireModeratorOrNoLobby
+	 *
+	 * Sends a rich-object to the given room.
+	 *
+	 * The author and timestamp are automatically set to the current user/guest
+	 * and time.
+	 *
+	 * @param string $objectType
+	 * @param string $objectId
+	 * @param string $metaData
+	 * @param string $actorDisplayName
+	 * @param string $referenceId
+	 * @return DataResponse the status code is "201 Created" if successful, and
+	 *         "404 Not found" if the room or session for a guest user was not
+	 *         found".
+	 */
+	public function shareObjectToChat(string $objectType, string $objectId, string $metaData = '', string $actorDisplayName = '', string $referenceId = ''): DataResponse {
+		[$actorType, $actorId] = $this->getActorInfo($actorDisplayName);
+		if (!$actorId) {
+			return new DataResponse([], Http::STATUS_NOT_FOUND);
 		}
 
-		$this->participant->setLastReadMessage((int) $comment->getId());
-
-		$data = $chatMessage->toArray();
-		if ($parentMessage instanceof Message) {
-			$data['parent'] = $parentMessage->toArray();
+		$data = $metaData !== '' ? json_decode($metaData, true) : [];
+		if (!is_array($data)) {
+			$data = [];
 		}
-		return new DataResponse($data, Http::STATUS_CREATED);
+		$data['type'] = $objectType;
+		$data['id'] = $objectId;
+
+		if (isset($data['link']) && !$this->trustedDomainHelper->isTrustedUrl($data['link'])) {
+			return new DataResponse([], Http::STATUS_BAD_REQUEST);
+		}
+
+		try {
+			$this->richObjectValidator->validate('{object}', ['object' => $data]);
+		} catch (InvalidObjectExeption $e) {
+			return new DataResponse([], Http::STATUS_BAD_REQUEST);
+		}
+
+		if ($data['type'] === 'geo-location'
+			&& !preg_match(ChatManager::GEO_LOCATION_VALIDATOR, $data['id'])) {
+			return new DataResponse([], Http::STATUS_BAD_REQUEST);
+		}
+
+		$this->participantService->ensureOneToOneRoomIsFilled($this->room);
+		$creationDateTime = $this->timeFactory->getDateTime('now', new \DateTimeZone('UTC'));
+
+		$message = json_encode([
+			'message' => 'object_shared',
+			'parameters' => [
+				'objectType' => $objectType,
+				'objectId' => $objectId,
+				'metaData' => $data,
+			],
+		]);
+
+		try {
+			$comment = $this->chatManager->addSystemMessage($this->room, $actorType, $actorId, $message, $creationDateTime, true, $referenceId);
+		} catch (MessageTooLongException $e) {
+			return new DataResponse([], Http::STATUS_REQUEST_ENTITY_TOO_LARGE);
+		} catch (\Exception $e) {
+			return new DataResponse([], Http::STATUS_BAD_REQUEST);
+		}
+
+		return $this->parseCommentToResponse($comment);
 	}
 
 	/**
@@ -230,10 +340,14 @@ class ChatController extends AEnvironmentAwareController {
 	 * @param int $lookIntoFuture Polling for new messages (1) or getting the history of the chat (0)
 	 * @param int $limit Number of chat messages to receive (100 by default, 200 at most)
 	 * @param int $lastKnownMessageId The last known message (serves as offset)
+	 * @param int $lastCommonReadId The last known common read message
+	 *                              (so the response is 200 instead of 304 when
+	 *                              it changes even when there are no messages)
 	 * @param int $timeout Number of seconds to wait for new messages (30 by default, 30 at most)
 	 * @param int $setReadMarker Automatically set the last read marker when 1,
 	 *                           if your client does this itself via chat/{token}/read set to 0
 	 * @param int $includeLastKnown Include the $lastKnownMessageId in the messages when 1 (default 0)
+	 * @param int $noStatusUpdate When the user status should not be automatically set to online set to 1 (default 0)
 	 * @return DataResponse an array of chat messages, "404 Not found" if the
 	 *         room token was not valid or "304 Not modified" if there were no messages;
 	 *         each chat message is an array with
@@ -241,12 +355,40 @@ class ChatController extends AEnvironmentAwareController {
 	 *         'actorDisplayName', 'timestamp' (in seconds and UTC timezone) and
 	 *         'message'.
 	 */
-	public function receiveMessages(int $lookIntoFuture, int $limit = 100, int $lastKnownMessageId = 0, int $timeout = 30, int $setReadMarker = 1, int $includeLastKnown = 0): DataResponse {
+	public function receiveMessages(int $lookIntoFuture,
+									int $limit = 100,
+									int $lastKnownMessageId = 0,
+									int $lastCommonReadId = 0,
+									int $timeout = 30,
+									int $setReadMarker = 1,
+									int $includeLastKnown = 0,
+									int $noStatusUpdate = 0): DataResponse {
 		$limit = min(200, $limit);
 		$timeout = min(30, $timeout);
 
-		if ($this->participant->getSessionId() !== '0') {
-			$this->room->ping($this->participant->getUser(), $this->participant->getSessionId(), $this->timeFactory->getTime());
+		$session = $this->participant->getSession();
+		if ($noStatusUpdate === 0 && $session instanceof Session) {
+			// The mobile apps dont do internal signaling unless in a call
+			$isMobileApp = $this->request->isUserAgent([
+				IRequest::USER_AGENT_TALK_ANDROID,
+				IRequest::USER_AGENT_TALK_IOS,
+			]);
+			if ($isMobileApp && $session->getInCall() === Participant::FLAG_DISCONNECTED) {
+				$this->sessionService->updateLastPing($session, $this->timeFactory->getTime());
+
+				if ($lookIntoFuture) {
+					$attendee = $this->participant->getAttendee();
+					if ($attendee->getActorType() === Attendee::ACTOR_USERS) {
+						// Bump the user status again
+						$event = new UserLiveStatusEvent(
+							$this->userManager->get($attendee->getActorId()),
+							IUserStatus::ONLINE,
+							$this->timeFactory->getTime()
+						);
+						$this->eventDispatcher->dispatchTyped($event);
+					}
+				}
+			}
 		}
 
 		/**
@@ -260,9 +402,11 @@ class ChatController extends AEnvironmentAwareController {
 		 * we only update the read marker to the last known id, when it is higher
 		 * then the current read marker.
 		 */
+
+		$attendee = $this->participant->getAttendee();
 		if ($lookIntoFuture && $setReadMarker === 1 &&
-			$lastKnownMessageId > $this->participant->getLastReadMessage()) {
-			$this->participant->setLastReadMessage($lastKnownMessageId);
+			$lastKnownMessageId > $attendee->getLastReadMessage()) {
+			$this->participantService->updateLastReadMessage($this->participant, $lastKnownMessageId);
 		}
 
 		$currentUser = $this->userManager->get($this->userId);
@@ -273,7 +417,18 @@ class ChatController extends AEnvironmentAwareController {
 		}
 
 		if (empty($comments)) {
-			return new DataResponse([], Http::STATUS_NOT_MODIFIED);
+			$response = new DataResponse([], Http::STATUS_NOT_MODIFIED);
+			if ($lastCommonReadId && $this->participant->getAttendee()->getReadPrivacy() === Participant::PRIVACY_PUBLIC) {
+				$newLastCommonRead = $this->chatManager->getLastCommonReadMessage($this->room);
+				if ($lastCommonReadId !== $newLastCommonRead) {
+					// Set the status code to 200 so the header is sent to the client.
+					// As per "section 10.3.5 of RFC 2616" entity headers shall be
+					// stripped out on 304: https://stackoverflow.com/a/17822709
+					$response->setStatus(Http::STATUS_OK);
+					$response->addHeader('X-Chat-Last-Common-Read', $newLastCommonRead);
+				}
+			}
+			return $response;
 		}
 
 		$i = 0;
@@ -348,24 +503,181 @@ class ChatController extends AEnvironmentAwareController {
 			];
 		}
 
+		$messages = $this->loadSelfReactions($messages, $commentIdToIndex);
+
 		$response = new DataResponse($messages, Http::STATUS_OK);
 
 		$newLastKnown = end($comments);
 		if ($newLastKnown instanceof IComment) {
 			$response->addHeader('X-Chat-Last-Given', $newLastKnown->getId());
 			/**
-			 * This false set the read marker on new messages although you
+			 * This falsely set the read marker on new messages although you
 			 * navigated away to a different chat already. So we removed this
 			 * and instead update the read marker before your next waiting.
 			 * So when you are still there, it will just have a wrong read
 			 * marker for the time until your next request starts, while it will
 			 * not update the value, when you actually left the chat already.
 			 * if ($setReadMarker === 1 && $lookIntoFuture) {
-			 * $this->participant->setLastReadMessage((int) $newLastKnown->getId());
+			 * $this->participantService->updateLastReadMessage($this->participant, (int) $newLastKnown->getId());
 			 * }
 			 */
+			if ($this->participant->getAttendee()->getReadPrivacy() === Participant::PRIVACY_PUBLIC) {
+				$response->addHeader('X-Chat-Last-Common-Read', $this->chatManager->getLastCommonReadMessage($this->room));
+			}
 		}
 
+		return $response;
+	}
+
+	protected function loadSelfReactions(array $messages, array $commentIdToIndex): array {
+		// Get message ids with reactions
+		$messageIdsWithReactions = array_map(
+			static fn (array $message) => $message['id'],
+			array_filter($messages, static fn (array $message) => !empty($message['reactions']))
+		);
+
+		// Get parents with reactions
+		$parentsWithReactions = array_map(
+			static fn (array $message) => ['parent' => $message['parent']['id'], 'message' => $message['id']],
+			array_filter($messages, static fn (array $message) => !empty($message['parent']['reactions']))
+		);
+
+		// Create a map, so we can translate the parent's $messageId to the correct child entries
+		$parentMap = $parentIdsWithReactions = [];
+		foreach ($parentsWithReactions as $entry) {
+			$parentMap[(int) $entry['parent']] ??= [];
+			$parentMap[(int) $entry['parent']][] = (int) $entry['message'];
+			$parentIdsWithReactions[] = (int) $entry['parent'];
+		}
+
+		// Unique list for the query
+		$idsWithReactions = array_unique(array_merge($messageIdsWithReactions, $parentIdsWithReactions));
+		$reactionsById = $this->reactionManager->getReactionsByActorForMessages($this->participant, $idsWithReactions);
+
+		// Inject the reactions self into the $messages array
+		foreach ($reactionsById as $messageId => $reactions) {
+			if (isset($commentIdToIndex[$messageId]) && isset($messages[$commentIdToIndex[$messageId]])) {
+				$messages[$commentIdToIndex[$messageId]]['reactionsSelf'] = $reactions;
+			}
+
+			// Add the self part also to potential parent elements
+			if (isset($parentMap[$messageId])) {
+				foreach ($parentMap[$messageId] as $mid) {
+					if (isset($messages[$commentIdToIndex[$mid]])) {
+						$messages[$commentIdToIndex[$mid]]['parent']['reactionsSelf'] = $reactions;
+					}
+				}
+			}
+		}
+
+		return $messages;
+	}
+
+	/**
+	 * @NoAdminRequired
+	 * @RequireParticipant
+	 * @RequireReadWriteConversation
+	 * @RequirePermissions(permissions=chat)
+	 * @RequireModeratorOrNoLobby
+	 *
+	 * @param int $messageId
+	 * @return DataResponse
+	 */
+	public function deleteMessage(int $messageId): DataResponse {
+		try {
+			$message = $this->chatManager->getComment($this->room, (string) $messageId);
+		} catch (NotFoundException $e) {
+			return new DataResponse([], Http::STATUS_NOT_FOUND);
+		}
+
+		$attendee = $this->participant->getAttendee();
+		$isOwnMessage = $message->getActorType() === $attendee->getActorType()
+			&& $message->getActorId() === $attendee->getActorId();
+
+		// Special case for if the message is a bridged message, then the message is the bridge bot's message.
+		$isOwnMessage = $isOwnMessage || ($message->getActorType() === Attendee::ACTOR_BRIDGED && $attendee->getActorId() === MatterbridgeManager::BRIDGE_BOT_USERID);
+		if (!$isOwnMessage
+			&& (!$this->participant->hasModeratorPermissions(false)
+				|| $this->room->getType() === Room::TYPE_ONE_TO_ONE)) {
+			// Actor is not a moderator or not the owner of the message
+			return new DataResponse([], Http::STATUS_FORBIDDEN);
+		}
+
+		if ($message->getVerb() !== ChatManager::VERB_MESSAGE && $message->getVerb() !== ChatManager::VERB_OBJECT_SHARED) {
+			// System message (since the message is not parsed, it has type "system")
+			return new DataResponse([], Http::STATUS_METHOD_NOT_ALLOWED);
+		}
+
+		$maxDeleteAge = $this->timeFactory->getDateTime();
+		$maxDeleteAge->sub(new \DateInterval('PT6H'));
+		if ($message->getCreationDateTime() < $maxDeleteAge) {
+			// Message is too old
+			return new DataResponse([], Http::STATUS_BAD_REQUEST);
+		}
+
+		try {
+			$systemMessageComment = $this->chatManager->deleteMessage(
+				$this->room,
+				$message,
+				$this->participant,
+				$this->timeFactory->getDateTime()
+			);
+		} catch (ShareNotFound $e) {
+			return new DataResponse([], Http::STATUS_NOT_FOUND);
+		}
+
+		$systemMessage = $this->messageParser->createMessage($this->room, $this->participant, $systemMessageComment, $this->l);
+		$this->messageParser->parseMessage($systemMessage);
+
+		$comment = $this->chatManager->getComment($this->room, (string) $messageId);
+		$message = $this->messageParser->createMessage($this->room, $this->participant, $comment, $this->l);
+		$this->messageParser->parseMessage($message);
+
+		$data = $systemMessage->toArray();
+		$data['parent'] = $message->toArray();
+
+		$bridge = $this->matterbridgeManager->getBridgeOfRoom($this->room);
+
+		$response = new DataResponse($data, $bridge['enabled'] ? Http::STATUS_ACCEPTED : Http::STATUS_OK);
+		if ($this->participant->getAttendee()->getReadPrivacy() === Participant::PRIVACY_PUBLIC) {
+			$response->addHeader('X-Chat-Last-Common-Read', $this->chatManager->getLastCommonReadMessage($this->room));
+		}
+		return $response;
+	}
+
+	/**
+	 * @NoAdminRequired
+	 * @RequireModeratorParticipant
+	 * @RequireReadWriteConversation
+	 *
+	 * @return DataResponse
+	 */
+	public function clearHistory(): DataResponse {
+		$attendee = $this->participant->getAttendee();
+		if (!$this->participant->hasModeratorPermissions(false)
+				|| $this->room->getType() === Room::TYPE_ONE_TO_ONE) {
+			// Actor is not a moderator or not the owner of the message
+			return new DataResponse([], Http::STATUS_FORBIDDEN);
+		}
+
+		$systemMessageComment = $this->chatManager->clearHistory(
+			$this->room,
+			$attendee->getActorType(),
+			$attendee->getActorId()
+		);
+
+		$systemMessage = $this->messageParser->createMessage($this->room, $this->participant, $systemMessageComment, $this->l);
+		$this->messageParser->parseMessage($systemMessage);
+
+
+		$data = $systemMessage->toArray();
+
+		$bridge = $this->matterbridgeManager->getBridgeOfRoom($this->room);
+
+		$response = new DataResponse($data, $bridge['enabled'] ? Http::STATUS_ACCEPTED : Http::STATUS_OK);
+		if ($this->participant->getAttendee()->getReadPrivacy() === Participant::PRIVACY_PUBLIC) {
+			$response->addHeader('X-Chat-Last-Common-Read', $this->chatManager->getLastCommonReadMessage($this->room));
+		}
 		return $response;
 	}
 
@@ -377,21 +689,154 @@ class ChatController extends AEnvironmentAwareController {
 	 * @return DataResponse
 	 */
 	public function setReadMarker(int $lastReadMessage): DataResponse {
-		$this->participant->setLastReadMessage($lastReadMessage);
-		return new DataResponse();
+		$this->participantService->updateLastReadMessage($this->participant, $lastReadMessage);
+		$response = new DataResponse();
+		if ($this->participant->getAttendee()->getReadPrivacy() === Participant::PRIVACY_PUBLIC) {
+			$response->addHeader('X-Chat-Last-Common-Read', $this->chatManager->getLastCommonReadMessage($this->room));
+		}
+		return $response;
+	}
+
+	/**
+	 * @NoAdminRequired
+	 * @RequireParticipant
+	 *
+	 * @return DataResponse
+	 */
+	public function markUnread(): DataResponse {
+		$message = $this->room->getLastMessage();
+		$unreadId = 0;
+
+		if ($message instanceof IComment) {
+			try {
+				$previousMessage = $this->chatManager->getPreviousMessageWithVerb(
+					$this->room,
+					(int)$message->getId(),
+					['comment'],
+					$message->getVerb() === ChatManager::VERB_MESSAGE
+				);
+				$unreadId = (int) $previousMessage->getId();
+			} catch (NotFoundException $e) {
+				// No chat message found, only system messages.
+				// Marking unread from beginning
+			}
+		}
+
+		return $this->setReadMarker($unreadId);
+	}
+
+	/**
+	 * @PublicPage
+	 * @RequireParticipant
+	 * @RequireModeratorOrNoLobby
+	 *
+	 * @param int $limit
+	 * @return DataResponse
+	 */
+	public function getObjectsSharedInRoomOverview(int $limit = 7): DataResponse {
+		$limit = min(20, $limit);
+
+		$objectTypes = [
+			Attachment::TYPE_AUDIO,
+			Attachment::TYPE_DECK_CARD,
+			Attachment::TYPE_FILE,
+			Attachment::TYPE_LOCATION,
+			Attachment::TYPE_MEDIA,
+			Attachment::TYPE_OTHER,
+			Attachment::TYPE_VOICE,
+		];
+
+		$messages = [];
+		$messageIdsByType = [];
+		foreach ($objectTypes as $objectType) {
+			$attachments = $this->attachmentService->getAttachmentsByType($this->room, $objectType, 0, $limit);
+			$messageIdsByType[$objectType] = array_map(static fn (Attachment $attachment): int => $attachment->getMessageId(), $attachments);
+		}
+		$comments = $this->chatManager->getMessagesById($this->room, array_merge(...array_values($messageIdsByType)));
+
+		foreach ($comments as $comment) {
+			$message = $this->messageParser->createMessage($this->room, $this->participant, $comment, $this->l);
+			$this->messageParser->parseMessage($message);
+
+			if (!$message->getVisibility()) {
+				continue;
+			}
+
+			$messages[(int) $comment->getId()] = $message->toArray();
+		}
+
+		$messagesByType = [];
+		foreach ($objectTypes as $objectType) {
+			$messagesByType[$objectType] = [];
+
+			foreach ($messageIdsByType[$objectType] as $messageId) {
+				$messagesByType[$objectType][] = $messages[$messageId];
+			}
+		}
+
+		return new DataResponse($messagesByType, Http::STATUS_OK);
+	}
+
+	/**
+	 * @PublicPage
+	 * @RequireParticipant
+	 * @RequireModeratorOrNoLobby
+	 *
+	 * @param string $objectType
+	 * @param int $lastKnownMessageId
+	 * @param int $limit
+	 * @return DataResponse
+	 */
+	public function getObjectsSharedInRoom(string $objectType, int $lastKnownMessageId = 0, int $limit = 100): DataResponse {
+		$offset = max(0, $lastKnownMessageId);
+		$limit = min(200, $limit);
+
+		$attachments = $this->attachmentService->getAttachmentsByType($this->room, $objectType, $offset, $limit);
+		$messageIds = array_map(static fn (Attachment $attachment): int => $attachment->getMessageId(), $attachments);
+
+		$messages = $this->getMessagesForRoom($this->room, $messageIds);
+
+		$response = new DataResponse($messages, Http::STATUS_OK);
+
+		if (!empty($messages)) {
+			$newLastKnown = min(array_keys($messages));
+			$response->addHeader('X-Chat-Last-Given', $newLastKnown);
+		}
+
+		return $response;
+	}
+
+	protected function getMessagesForRoom(Room $room, array $messageIds): array {
+		$comments = $this->chatManager->getMessagesById($room, $messageIds);
+
+		$messages = [];
+		foreach ($comments as $comment) {
+			$message = $this->messageParser->createMessage($room, $this->participant, $comment, $this->l);
+			$this->messageParser->parseMessage($message);
+
+			if (!$message->getVisibility()) {
+				continue;
+			}
+
+			$messages[(int) $comment->getId()] = $message->toArray();
+		}
+
+		return $messages;
 	}
 
 	/**
 	 * @PublicPage
 	 * @RequireParticipant
 	 * @RequireReadWriteConversation
+	 * @RequirePermissions(permissions=chat)
 	 * @RequireModeratorOrNoLobby
 	 *
 	 * @param string $search
 	 * @param int $limit
+	 * @param bool $includeStatus
 	 * @return DataResponse
 	 */
-	public function mentions(string $search, int $limit = 20): DataResponse {
+	public function mentions(string $search, int $limit = 20, bool $includeStatus = false): DataResponse {
 		$this->searchPlugin->setContext([
 			'itemType' => 'chat',
 			'itemId' => $this->room->getId(),
@@ -411,40 +856,48 @@ class ChatController extends AEnvironmentAwareController {
 			'search' => $search,
 		]);
 
-		$results = $this->prepareResultArray($results);
+		$statuses = [];
+		if ($this->userId !== null
+			&& $includeStatus
+			&& $this->appManager->isEnabledForUser('user_status')) {
+			$userIds = array_filter(array_map(static function (array $userResult) {
+				return $userResult['value']['shareWith'];
+			}, $results['users']));
 
-		$roomDisplayName = $this->room->getDisplayName($this->participant->getUser());
-		if (($search === '' || strpos('all', $search) !== false || stripos($roomDisplayName, $search) !== false) && $this->room->getType() !== Room::ONE_TO_ONE_CALL) {
-			if ($search === '' ||
-				stripos($roomDisplayName, $search) === 0 ||
-				strpos('all', $search) === 0) {
-				array_unshift($results, [
-					'id' => 'all',
-					'label' => $roomDisplayName,
-					'source' => 'calls',
-				]);
-			} else {
-				$results[] = [
-					'id' => 'all',
-					'label' => $roomDisplayName,
-					'source' => 'calls',
-				];
-			}
+			$statuses = $this->statusManager->getUserStatuses($userIds);
 		}
+
+		$results = $this->prepareResultArray($results, $statuses);
+
+		$results = $this->chatManager->addConversationNotify($results, $search, $this->room, $this->participant);
 
 		return new DataResponse($results);
 	}
 
 
-	protected function prepareResultArray(array $results): array {
+	/**
+	 * @param array $results
+	 * @param IUserStatus[] $statuses
+	 * @return array
+	 */
+	protected function prepareResultArray(array $results, array $statuses): array {
 		$output = [];
 		foreach ($results as $type => $subResult) {
 			foreach ($subResult as $result) {
-				$output[] = [
+				$data = [
 					'id' => $result['value']['shareWith'],
 					'label' => $result['label'],
 					'source' => $type,
 				];
+
+				if ($type === Attendee::ACTOR_USERS && isset($statuses[$data['id']])) {
+					$data['status'] = $statuses[$data['id']]->getStatus();
+					$data['statusIcon'] = $statuses[$data['id']]->getIcon();
+					$data['statusMessage'] = $statuses[$data['id']]->getMessage();
+					$data['statusClearAt'] = $statuses[$data['id']]->getClearAt();
+				}
+
+				$output[] = $data;
 			}
 		}
 		return $output;

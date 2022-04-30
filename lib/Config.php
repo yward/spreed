@@ -24,6 +24,8 @@ declare(strict_types=1);
 namespace OCA\Talk;
 
 use OCP\AppFramework\Utility\ITimeFactory;
+use OCA\Talk\Events\GetTurnServersEvent;
+use OCP\EventDispatcher\IEventDispatcher;
 use OCP\IConfig;
 use OCP\IGroupManager;
 use OCP\IUser;
@@ -34,23 +36,24 @@ class Config {
 	public const SIGNALING_EXTERNAL = 'external';
 	public const SIGNALING_CLUSTER_CONVERSATION = 'conversation_cluster';
 
-	/** @var IConfig */
-	protected $config;
-	/** @var ITimeFactory */
-	protected $timeFactory;
-	/** @var IGroupManager */
-	private $groupManager;
-	/** @var ISecureRandom */
-	private $secureRandom;
+	protected IConfig $config;
+	protected ITimeFactory $timeFactory;
+	private IGroupManager $groupManager;
+	private ISecureRandom $secureRandom;
+	private IEventDispatcher $dispatcher;
+
+	protected array $canEnableSIP = [];
 
 	public function __construct(IConfig $config,
 								ISecureRandom $secureRandom,
 								IGroupManager $groupManager,
-								ITimeFactory $timeFactory) {
+								ITimeFactory $timeFactory,
+								IEventDispatcher $dispatcher) {
 		$this->config = $config;
 		$this->secureRandom = $secureRandom;
 		$this->groupManager = $groupManager;
 		$this->timeFactory = $timeFactory;
+		$this->dispatcher = $dispatcher;
 	}
 
 	/**
@@ -60,6 +63,61 @@ class Config {
 		$groups = $this->config->getAppValue('spreed', 'allowed_groups', '[]');
 		$groups = json_decode($groups, true);
 		return \is_array($groups) ? $groups : [];
+	}
+
+	public function getUserReadPrivacy(string $userId): int {
+		return (int) $this->config->getUserValue(
+			$userId,
+			'spreed', 'read_status_privacy',
+			(string) Participant::PRIVACY_PUBLIC);
+	}
+
+	/**
+	 * @return string[]
+	 */
+	public function getSIPGroups(): array {
+		$groups = $this->config->getAppValue('spreed', 'sip_bridge_groups', '[]');
+		$groups = json_decode($groups, true);
+		return \is_array($groups) ? $groups : [];
+	}
+
+	public function isSIPConfigured(): bool {
+		return $this->getSIPSharedSecret() !== ''
+			&& $this->getDialInInfo() !== '';
+	}
+
+	/**
+	 * Determine if Talk federation is enabled on this instance
+	 */
+	public function isFederationEnabled(): bool {
+		// TODO: Set to default true once implementation is complete
+		return $this->config->getAppValue('spreed', 'federation_enabled', 'no') === 'yes';
+	}
+
+	public function getDialInInfo(): string {
+		return $this->config->getAppValue('spreed', 'sip_bridge_dialin_info');
+	}
+
+	public function getSIPSharedSecret(): string {
+		return $this->config->getAppValue('spreed', 'sip_bridge_shared_secret');
+	}
+
+	public function canUserEnableSIP(IUser $user): bool {
+		if (isset($this->canEnableSIP[$user->getUID()])) {
+			return $this->canEnableSIP[$user->getUID()];
+		}
+
+		$this->canEnableSIP[$user->getUID()] = false;
+
+		$allowedGroups = $this->getSIPGroups();
+		if (empty($allowedGroups)) {
+			$this->canEnableSIP[$user->getUID()] = true;
+		} else {
+			$userGroups = $this->groupManager->getUserGroupIds($user);
+			$this->canEnableSIP[$user->getUID()] = !empty(array_intersect($allowedGroups, $userGroups));
+		}
+
+		return $this->canEnableSIP[$user->getUID()];
 	}
 
 	public function isDisabledForUser(IUser $user): bool {
@@ -163,41 +221,33 @@ class Config {
 	}
 
 	/**
-	 * @return string
-	 */
-	public function getStunServer(): string {
-		$servers = $this->getStunServers();
-
-		if (empty($servers)) {
-			return '';
-		}
-
-		// For now we use a random server from the list
-		try {
-			return $servers[random_int(0, count($servers) - 1)];
-		} catch (\Exception $e) {
-			return $servers[0];
-		}
-	}
-
-	/**
 	 * Generates a username and password for the TURN server
 	 *
 	 * @return array
 	 */
-	public function getTurnServers(): array {
+	public function getTurnServers(bool $withEvent = true): array {
 		$config = $this->config->getAppValue('spreed', 'turn_servers');
 		$servers = json_decode($config, true);
 
 		if ($servers === null || empty($servers) || !is_array($servers)) {
-			return [];
+			$servers = [];
+		}
+
+		if ($withEvent) {
+			$event = new GetTurnServersEvent($servers);
+			$this->dispatcher->dispatchTyped($event);
+			$servers = $event->getServers();
+		}
+
+		foreach ($servers as $key => $server) {
+			$servers[$key]['schemes'] = $server['schemes'] ?? 'turn';
 		}
 
 		return $servers;
 	}
 
 	/**
-	 * Generates a username and password for the TURN server
+	 * Prepares a list of TURN servers with username and password
 	 *
 	 * @return array
 	 */
@@ -205,19 +255,7 @@ class Config {
 		$servers = $this->getTurnServers();
 
 		if (empty($servers)) {
-			return [
-				'server' => '',
-				'username' => '',
-				'password' => '',
-				'protocols' => '',
-			];
-		}
-
-		// For now we use a random server from the list
-		try {
-			$server = $servers[random_int(0, count($servers) - 1)];
-		} catch (\Exception $e) {
-			$server = $servers[0];
+			return [];
 		}
 
 		// Credentials are valid for 24h
@@ -225,17 +263,24 @@ class Config {
 		$timestamp = $this->timeFactory->getTime() + 86400;
 		$rnd = $this->secureRandom->generate(16);
 		$username = $timestamp . ':' . $rnd;
-		$password = base64_encode(hash_hmac('sha1', $username, $server['secret'], true));
 
-		return [
-			'server' => $server['server'],
-			'username' => $username,
-			'password' => $password,
-			'protocols' => $server['protocols'],
-		];
+		foreach ($servers as $server) {
+			$u = $server['username'] ?? $username;
+			$password = $server['password'] ?? base64_encode(hash_hmac('sha1', $u, $server['secret'], true));
+
+			$turnSettings[] = [
+				'schemes' => $server['schemes'],
+				'server' => $server['server'],
+				'username' => $u,
+				'password' => $password,
+				'protocols' => $server['protocols'],
+			];
+		}
+
+		return $turnSettings;
 	}
 
-	public function getSignalingMode($cleanExternalSignaling = true): string {
+	public function getSignalingMode(bool $cleanExternalSignaling = true): string {
 		$validModes = [
 			self::SIGNALING_INTERNAL,
 			self::SIGNALING_EXTERNAL,
@@ -349,5 +394,13 @@ class Config {
 		$data = substr($ticket, 0, $lastColon);
 		$hash = hash_hmac('sha256', $data, $secret);
 		return hash_equals($hash, substr($ticket, $lastColon + 1));
+	}
+
+	public function getGridVideosLimit(): int {
+		return (int) $this->config->getAppValue('spreed', 'grid_videos_limit', '19'); // 5*4 - self
+	}
+
+	public function getGridVideosLimitEnforced(): bool {
+		return $this->config->getAppValue('spreed', 'grid_videos_limit_enforced', 'no') === 'yes';
 	}
 }

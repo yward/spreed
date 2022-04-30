@@ -24,14 +24,20 @@ declare(strict_types=1);
 namespace OCA\Talk\Tests\php\Settings\Admin;
 
 use OCA\Talk\Config;
+use OCA\Talk\MatterbridgeManager;
 use OCA\Talk\Service\CommandService;
 use OCA\Talk\Settings\Admin\AdminSettings;
+use OCP\AppFramework\Services\IInitialState;
 use OCP\ICacheFactory;
 use OCP\IConfig;
-use OCP\IInitialStateService;
+use OCP\IGroupManager;
+use OCP\IL10N;
+use OCP\IUserSession;
+use OCP\L10N\IFactory;
 use PHPUnit\Framework\MockObject\MockObject;
+use Test\TestCase;
 
-class AdminSettingsTest extends \Test\TestCase {
+class AdminSettingsTest extends TestCase {
 
 	/** @var Config|MockObject */
 	protected $talkConfig;
@@ -39,12 +45,21 @@ class AdminSettingsTest extends \Test\TestCase {
 	protected $serverConfig;
 	/** @var CommandService|MockObject */
 	protected $commandService;
-	/** @var IInitialStateService|MockObject */
+	/** @var IInitialState|MockObject */
 	protected $initialState;
 	/** @var ICacheFactory|MockObject */
 	protected $cacheFactory;
-	/** @var AdminSettings */
-	protected $admin;
+	/** @var IGroupManager|MockObject  */
+	protected $groupManager;
+	/** @var MatterbridgeManager|MockObject  */
+	protected $matterbridgeManager;
+	/** @var IUserSession|MockObject  */
+	protected $userSession;
+	/** @var IL10N|MockObject  */
+	protected $l10n;
+	/** @var IFactory|MockObject  */
+	protected $l10nFactory;
+	protected ?AdminSettings $admin = null;
 
 	public function setUp(): void {
 		parent::setUp();
@@ -52,8 +67,13 @@ class AdminSettingsTest extends \Test\TestCase {
 		$this->talkConfig = $this->createMock(Config::class);
 		$this->serverConfig = $this->createMock(IConfig::class);
 		$this->commandService = $this->createMock(CommandService::class);
-		$this->initialState = $this->createMock(IInitialStateService::class);
+		$this->initialState = $this->createMock(IInitialState::class);
 		$this->cacheFactory = $this->createMock(ICacheFactory::class);
+		$this->groupManager = $this->createMock(IGroupManager::class);
+		$this->matterbridgeManager = $this->createMock(MatterbridgeManager::class);
+		$this->userSession = $this->createMock(IUserSession::class);
+		$this->l10n = $this->createMock(IL10N::class);
+		$this->l10nFactory = $this->createMock(IFactory::class);
 
 		$this->admin = $this->getAdminSettings();
 	}
@@ -69,7 +89,12 @@ class AdminSettingsTest extends \Test\TestCase {
 				$this->serverConfig,
 				$this->commandService,
 				$this->initialState,
-				$this->cacheFactory
+				$this->cacheFactory,
+				$this->groupManager,
+				$this->matterbridgeManager,
+				$this->userSession,
+				$this->l10n,
+				$this->l10nFactory
 			);
 		}
 
@@ -80,6 +105,11 @@ class AdminSettingsTest extends \Test\TestCase {
 				$this->commandService,
 				$this->initialState,
 				$this->cacheFactory,
+				$this->groupManager,
+				$this->matterbridgeManager,
+				$this->userSession,
+				$this->l10n,
+				$this->l10nFactory,
 			])
 			->onlyMethods($methods)
 			->getMock();
@@ -102,7 +132,8 @@ class AdminSettingsTest extends \Test\TestCase {
 			'initCommands',
 			'initStunServers',
 			'initTurnServers',
-			'initSignalingServers'
+			'initSignalingServers',
+			'initRequestSignalingServerTrial',
 		]);
 
 		$admin->expects($this->once())
@@ -117,6 +148,8 @@ class AdminSettingsTest extends \Test\TestCase {
 			->method('initTurnServers');
 		$admin->expects($this->once())
 			->method('initSignalingServers');
+		$admin->expects($this->once())
+			->method('initRequestSignalingServerTrial');
 
 		$form = $admin->getForm();
 		$this->assertSame('settings/admin-settings', $form->getTemplateName());
@@ -136,8 +169,8 @@ class AdminSettingsTest extends \Test\TestCase {
 		$this->initialState->expects($this->exactly(2))
 			->method('provideInitialState')
 			->withConsecutive(
-				['talk', 'stun_servers', ['getStunServers']],
-				['talk', 'has_internet_connection', true]
+				['stun_servers', ['getStunServers']],
+				['has_internet_connection', true]
 			);
 
 		$admin = $this->getAdminSettings();
@@ -151,7 +184,7 @@ class AdminSettingsTest extends \Test\TestCase {
 
 		$this->initialState->expects($this->once())
 			->method('provideInitialState')
-			->with('talk', 'turn_servers', ['getTurnServers']);
+			->with('turn_servers', ['getTurnServers']);
 
 		$admin = $this->getAdminSettings();
 		self::invokePrivate($admin, 'initTurnServers');

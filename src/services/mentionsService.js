@@ -2,7 +2,7 @@
  *
  * @copyright Copyright (c) 2020, Daniel Calviño Sánchez <danxuliu@gmail.com>
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -30,9 +30,10 @@ import { generateOcsUrl } from '@nextcloud/router'
  */
 const searchPossibleMentions = async function(token, searchText) {
 	try {
-		const response = await axios.get(generateOcsUrl('apps/spreed/api/v1/chat', 2) + `${token}/mentions`, {
+		const response = await axios.get(generateOcsUrl('apps/spreed/api/v1/chat/{token}/mentions', { token }), {
 			params: {
 				search: searchText,
+				includeStatus: 1,
 			},
 		})
 		return response

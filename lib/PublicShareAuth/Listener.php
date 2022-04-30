@@ -24,12 +24,15 @@ declare(strict_types=1);
 
 namespace OCA\Talk\PublicShareAuth;
 
+use OCA\Talk\Events\AddParticipantsEvent;
 use OCA\Talk\Events\JoinRoomGuestEvent;
 use OCA\Talk\Events\JoinRoomUserEvent;
 use OCA\Talk\Events\RoomEvent;
 use OCA\Talk\Exceptions\ParticipantNotFoundException;
+use OCA\Talk\Exceptions\RoomNotFoundException;
 use OCA\Talk\Participant;
 use OCA\Talk\Room;
+use OCA\Talk\Service\ParticipantService;
 use OCP\EventDispatcher\IEventDispatcher;
 
 /**
@@ -47,17 +50,22 @@ use OCP\EventDispatcher\IEventDispatcher;
  */
 class Listener {
 	public static function register(IEventDispatcher $dispatcher): void {
-		$listener = static function (JoinRoomUserEvent $event) {
+		$listener = static function (JoinRoomUserEvent $event): void {
 			self::preventExtraUsersFromJoining($event->getRoom(), $event->getUser()->getUID());
 		};
 		$dispatcher->addListener(Room::EVENT_BEFORE_ROOM_CONNECT, $listener);
 
-		$listener = static function (JoinRoomGuestEvent $event) {
+		$listener = static function (JoinRoomGuestEvent $event): void {
 			self::preventExtraGuestsFromJoining($event->getRoom());
 		};
 		$dispatcher->addListener(Room::EVENT_BEFORE_GUEST_CONNECT, $listener);
 
-		$listener = static function (RoomEvent $event) {
+		$listener = static function (AddParticipantsEvent $event): void {
+			self::preventExtraUsersFromBeingAdded($event->getRoom(), $event->getParticipants());
+		};
+		$dispatcher->addListener(Room::EVENT_BEFORE_USERS_ADD, $listener);
+
+		$listener = static function (RoomEvent $event): void {
 			self::destroyRoomOnParticipantLeave($event->getRoom());
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_USER_REMOVE, $listener);
@@ -74,7 +82,7 @@ class Listener {
 	 *
 	 * @param Room $room
 	 * @param string $userId
-	 * @throws \OverflowException
+	 * @throws RoomNotFoundException
 	 */
 	public static function preventExtraUsersFromJoining(Room $room, string $userId): void {
 		if ($room->getObjectType() !== 'share:password') {
@@ -82,15 +90,16 @@ class Listener {
 		}
 
 		try {
-			$participant = $room->getParticipant($userId);
-			if ($participant->getParticipantType() === Participant::OWNER) {
+			$participant = $room->getParticipant($userId, false);
+			if ($participant->getAttendee()->getParticipantType() === Participant::OWNER) {
 				return;
 			}
 		} catch (ParticipantNotFoundException $e) {
 		}
 
-		if ($room->getActiveGuests() > 0 || \count($room->getParticipantUserIds()) > 1) {
-			throw new \OverflowException('Only the owner and another participant are allowed in rooms to request the password for a share');
+		$participantService = \OC::$server->get(ParticipantService::class);
+		if ($participantService->getNumberOfActors($room) > 1) {
+			throw new RoomNotFoundException('Only the owner and another participant are allowed in rooms to request the password for a share');
 		}
 	}
 
@@ -101,15 +110,48 @@ class Listener {
 	 * This method should be called before a guest joins a room.
 	 *
 	 * @param Room $room
-	 * @throws \OverflowException
+	 * @throws RoomNotFoundException
 	 */
 	public static function preventExtraGuestsFromJoining(Room $room): void {
 		if ($room->getObjectType() !== 'share:password') {
 			return;
 		}
 
-		if ($room->getActiveGuests() > 0 || \count($room->getParticipantUserIds()) > 1) {
-			throw new \OverflowException('Only the owner and another participant are allowed in rooms to request the password for a share');
+		$participantService = \OC::$server->get(ParticipantService::class);
+		if ($participantService->getNumberOfActors($room) > 1) {
+			throw new RoomNotFoundException('Only the owner and another participant are allowed in rooms to request the password for a share');
+		}
+	}
+
+	/**
+	 * Prevents other users from being added to the room (as they will not be
+	 * able to join).
+	 *
+	 * This method should be called before a user is added to a room.
+	 *
+	 * @param Room $room
+	 * @param array[] $participants
+	 * @throws RoomNotFoundException
+	 */
+	public static function preventExtraUsersFromBeingAdded(Room $room, array $participants): void {
+		if ($room->getObjectType() !== 'share:password') {
+			return;
+		}
+
+		if (empty($participants)) {
+			return;
+		}
+
+		// Events with more than one participant can be directly aborted, as
+		// when the owner is added during room creation or a user self-joins the
+		// event will always have just one participant.
+		if (count($participants) > 1) {
+			throw new RoomNotFoundException('Only the owner and another participant are allowed in rooms to request the password for a share');
+		}
+
+		$participant = $participants[0];
+		if ($participant['participantType'] !== Participant::OWNER && $participant['participantType'] !== Participant::USER_SELF_JOINED) {
+			throw new RoomNotFoundException('Only the owner and another participant are allowed in rooms to request the password for a share');
 		}
 	}
 

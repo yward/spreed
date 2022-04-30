@@ -31,9 +31,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class ListCommand extends Base {
-
-	/** @var IConfig */
-	private $config;
+	private IConfig $config;
 
 	public function __construct(IConfig $config) {
 		parent::__construct();
@@ -48,7 +46,7 @@ class ListCommand extends Base {
 			->setDescription('List external signaling servers.');
 	}
 
-	protected function execute(InputInterface $input, OutputInterface $output): ?int {
+	protected function execute(InputInterface $input, OutputInterface $output): int {
 		$config = $this->config->getAppValue('spreed', 'signaling_servers');
 		$signaling = json_decode($config, true);
 		if (!is_array($signaling)) {

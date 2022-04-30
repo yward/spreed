@@ -28,6 +28,7 @@ use OCA\Talk\Events\RemoveParticipantEvent;
 use OCA\Talk\Events\RemoveUserEvent;
 use OCA\Talk\Events\RoomEvent;
 use OCA\Talk\GuestManager;
+use OCA\Talk\Model\Attendee;
 use OCA\Talk\Room;
 use OCP\Collaboration\Resources\IManager;
 use OCP\Collaboration\Resources\ResourceException;
@@ -36,10 +37,10 @@ use OCP\IUserManager;
 
 class Listener {
 	public static function register(IEventDispatcher $dispatcher): void {
-		$listener = static function (RoomEvent $event) {
+		$listener = static function (RoomEvent $event): void {
 			$room = $event->getRoom();
 			/** @var IManager $manager */
-			$resourceManager = \OC::$server->query(IManager::class);
+			$resourceManager = \OC::$server->get(IManager::class);
 
 			try {
 				$resource = $resourceManager->getResourceForUser('room', $room->getToken(), null);
@@ -50,10 +51,10 @@ class Listener {
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_ROOM_DELETE, $listener);
 
-		$listener = static function (AddParticipantsEvent $event) {
+		$listener = static function (AddParticipantsEvent $event): void {
 			$room = $event->getRoom();
 			/** @var IManager $manager */
-			$resourceManager = \OC::$server->query(IManager::class);
+			$resourceManager = \OC::$server->get(IManager::class);
 			/** @var IUserManager $userManager */
 			$userManager = \OC::$server->getUserManager();
 			try {
@@ -65,8 +66,8 @@ class Listener {
 			$participants = $event->getParticipants();
 			foreach ($participants as $participant) {
 				$user = null;
-				if ($participant['user_id'] !== '') {
-					$user = $userManager->get($participant['user_id']);
+				if ($participant['actorType'] === Attendee::ACTOR_USERS) {
+					$user = $userManager->get($participant['actorId']);
 				}
 
 				$resourceManager->invalidateAccessCacheForResourceByUser($resource, $user);
@@ -74,10 +75,10 @@ class Listener {
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_USERS_ADD, $listener);
 
-		$listener = static function (RemoveUserEvent $event) {
+		$listener = static function (RemoveUserEvent $event): void {
 			$room = $event->getRoom();
 			/** @var IManager $manager */
-			$resourceManager = \OC::$server->query(IManager::class);
+			$resourceManager = \OC::$server->get(IManager::class);
 			try {
 				$resource = $resourceManager->getResourceForUser('room', $room->getToken(), null);
 			} catch (ResourceException $e) {
@@ -88,10 +89,10 @@ class Listener {
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_USER_REMOVE, $listener);
 
-		$listener = static function (RemoveParticipantEvent $event) {
+		$listener = static function (RemoveParticipantEvent $event): void {
 			$room = $event->getRoom();
 			/** @var IManager $manager */
-			$resourceManager = \OC::$server->query(IManager::class);
+			$resourceManager = \OC::$server->get(IManager::class);
 			/** @var IUserManager $userManager */
 			$userManager = \OC::$server->getUserManager();
 			try {
@@ -101,15 +102,18 @@ class Listener {
 			}
 
 			$participant = $event->getParticipant();
-			$user = $userManager->get($participant->getUser());
+			$user = null;
+			if ($participant->getAttendee()->getActorType() === Attendee::ACTOR_USERS) {
+				$user = $userManager->get($participant->getAttendee()->getActorId());
+			}
 			$resourceManager->invalidateAccessCacheForResourceByUser($resource, $user);
 		};
 		$dispatcher->addListener(Room::EVENT_AFTER_PARTICIPANT_REMOVE, $listener);
 
-		$listener = static function (RoomEvent $event) {
+		$listener = static function (RoomEvent $event): void {
 			$room = $event->getRoom();
 			/** @var IManager $manager */
-			$resourceManager = \OC::$server->query(IManager::class);
+			$resourceManager = \OC::$server->get(IManager::class);
 
 			try {
 				$resource = $resourceManager->getResourceForUser('room', $room->getToken(), null);

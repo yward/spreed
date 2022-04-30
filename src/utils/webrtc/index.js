@@ -2,7 +2,7 @@
  *
  * @copyright Copyright (c) 2019, Daniel Calviño Sánchez (danxuliu@gmail.com)
  *
- * @license GNU AGPL version 3 or any later version
+ * @license AGPL-3.0-or-later
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -19,13 +19,17 @@
  *
  */
 
+import './shims/MediaStream'
+import './shims/MediaStreamTrack'
 import Axios from '@nextcloud/axios'
 import CancelableRequest from '../cancelableRequest'
 import Signaling from '../signaling'
 import initWebRtc from './webrtc'
+import CallAnalyzer from './analyzers/CallAnalyzer'
 import CallParticipantCollection from './models/CallParticipantCollection'
 import LocalCallParticipantModel from './models/LocalCallParticipantModel'
 import LocalMediaModel from './models/LocalMediaModel'
+import MediaDevicesManager from './MediaDevicesManager'
 import SentVideoQualityThrottler from './SentVideoQualityThrottler'
 import { PARTICIPANT } from '../../constants'
 import { fetchSignalingSettings } from '../../services/signalingService'
@@ -34,12 +38,17 @@ let webRtc = null
 const callParticipantCollection = new CallParticipantCollection()
 const localCallParticipantModel = new LocalCallParticipantModel()
 const localMediaModel = new LocalMediaModel()
+const mediaDevicesManager = new MediaDevicesManager()
+let callAnalyzer = null
 let sentVideoQualityThrottler = null
 
 let cancelFetchSignalingSettings = null
 let signaling = null
 let tokensInSignaling = {}
 
+/**
+ * @param {string} token The token of the conversation to get the signaling settings for
+ */
 async function getSignalingSettings(token) {
 	// If getSignalingSettings is called again while a previous one was still
 	// being executed the previous one is cancelled.
@@ -70,6 +79,9 @@ async function getSignalingSettings(token) {
 	return settings
 }
 
+/**
+ * @param {string} token The token of the conversation to connect to
+ */
 async function connectSignaling(token) {
 	const settings = await getSignalingSettings(token)
 	if (!settings) {
@@ -98,6 +110,10 @@ let pendingJoinCallToken = null
 let startedCall = null
 let failedToStartCall = null
 
+/**
+ * @param {object} signaling The signaling object
+ * @param {object} configuration Media to connect with
+ */
 function startCall(signaling, configuration) {
 	let flags = PARTICIPANT.CALL_FLAG.IN_CALL
 	if (configuration) {
@@ -110,29 +126,23 @@ function startCall(signaling, configuration) {
 	}
 
 	signaling.joinCall(pendingJoinCallToken, flags).then(() => {
-		startedCall()
+		startedCall(flags)
 	}).catch(error => {
 		failedToStartCall(error)
 	})
 }
 
+/**
+ *
+ */
 function setupWebRtc() {
 	if (webRtc) {
 		return
 	}
 
-	const _signaling = signaling
-
-	webRtc = initWebRtc(_signaling, callParticipantCollection)
+	webRtc = initWebRtc(signaling, callParticipantCollection, localCallParticipantModel)
 	localCallParticipantModel.setWebRtc(webRtc)
 	localMediaModel.setWebRtc(webRtc)
-
-	webRtc.on('localMediaStarted', (configuration) => {
-		startCall(_signaling, configuration)
-	})
-	webRtc.on('localMediaError', () => {
-		startCall(_signaling, null)
-	})
 }
 
 /**
@@ -140,7 +150,7 @@ function setupWebRtc() {
  *
  * @param {string} token Conversation to join
  * @param {string} sessionId Session id to join with
- * @returns {Promise<void>}
+ * @return {Promise<void>}
  */
 async function signalingJoinConversation(token, sessionId) {
 	await connectSignaling(token)
@@ -153,21 +163,71 @@ async function signalingJoinConversation(token, sessionId) {
  * Join the call of the given conversation
  *
  * @param {string} token Conversation to join the call
- * @returns {Promise<void>}
+ * @param {number} flags Bitwise combination of PARTICIPANT.CALL_FLAG
+ * @return {Promise<void>} Resolved with the actual flags based on the
+ *          available media
  */
-async function signalingJoinCall(token) {
+async function signalingJoinCall(token, flags) {
 	if (tokensInSignaling[token]) {
 		pendingJoinCallToken = token
 
 		setupWebRtc()
 
-		sentVideoQualityThrottler = new SentVideoQualityThrottler(localMediaModel, callParticipantCollection)
+		sentVideoQualityThrottler = new SentVideoQualityThrottler(localMediaModel, callParticipantCollection, webRtc.webrtc._videoTrackConstrainer)
+
+		if (signaling.hasFeature('mcu')) {
+			callAnalyzer = new CallAnalyzer(localMediaModel, localCallParticipantModel, callParticipantCollection)
+		} else {
+			callAnalyzer = new CallAnalyzer(localMediaModel, null, callParticipantCollection)
+		}
+
+		const _signaling = signaling
 
 		return new Promise((resolve, reject) => {
 			startedCall = resolve
 			failedToStartCall = reject
 
-			webRtc.startMedia(token)
+			// The previous state might be wiped after the media is started, so
+			// it should be saved now.
+			const enableAudio = !localStorage.getItem('audioDisabled_' + token)
+			const enableVideo = !localStorage.getItem('videoDisabled_' + token)
+			const enableVirtualBackground = !!localStorage.getItem('virtualBackgroundEnabled_' + token)
+
+			if (enableAudio) {
+				localMediaModel.enableAudio()
+			} else {
+				localMediaModel.disableAudio()
+			}
+			if (enableVideo) {
+				localMediaModel.enableVideo()
+			} else {
+				localMediaModel.disableVideo()
+			}
+			if (enableVirtualBackground) {
+				localMediaModel.enableVirtualBackground()
+			} else {
+				localMediaModel.disableVirtualBackground()
+			}
+
+			const startCallOnceLocalMediaStarted = (configuration) => {
+				webRtc.off('localMediaStarted', startCallOnceLocalMediaStarted)
+				webRtc.off('localMediaError', startCallOnceLocalMediaError)
+
+				startCall(_signaling, configuration)
+			}
+			const startCallOnceLocalMediaError = () => {
+				webRtc.off('localMediaStarted', startCallOnceLocalMediaStarted)
+				webRtc.off('localMediaError', startCallOnceLocalMediaError)
+
+				startCall(_signaling, null)
+			}
+
+			// ".once" can not be used, as both handlers need to be removed when
+			// just one of them is executed.
+			webRtc.on('localMediaStarted', startCallOnceLocalMediaStarted)
+			webRtc.on('localMediaError', startCallOnceLocalMediaError)
+
+			webRtc.startMedia(token, flags)
 		})
 	}
 }
@@ -176,14 +236,18 @@ async function signalingJoinCall(token) {
  * Leave the call of the given conversation
  *
  * @param {string} token Conversation to leave the call
- * @returns {Promise<void>}
+ * @param {boolean} all Whether to end the meeting for all
+ * @return {Promise<void>}
  */
-async function signalingLeaveCall(token) {
+async function signalingLeaveCall(token, all = false) {
 	sentVideoQualityThrottler.destroy()
 	sentVideoQualityThrottler = null
 
+	callAnalyzer.destroy()
+	callAnalyzer = null
+
 	if (tokensInSignaling[token]) {
-		await signaling.leaveCall(token)
+		await signaling.leaveCall(token, false, all)
 	}
 }
 
@@ -191,7 +255,7 @@ async function signalingLeaveCall(token) {
  * Leave the given conversation on the respective signaling server
  *
  * @param {string} token Conversation to leave
- * @returns {Promise<void>}
+ * @return {Promise<void>}
  */
 async function signalingLeaveConversation(token) {
 	if (tokensInSignaling[token]) {
@@ -213,6 +277,10 @@ export {
 	callParticipantCollection,
 	localCallParticipantModel,
 	localMediaModel,
+
+	mediaDevicesManager,
+
+	callAnalyzer,
 
 	signalingJoinConversation,
 	signalingJoinCall,

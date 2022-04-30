@@ -32,18 +32,14 @@ use OCP\Migration\IOutput;
 use OCP\Security\ISecureRandom;
 
 class Version2000Date20171026140257 extends SimpleMigrationStep {
+	protected IDBConnection $connection;
 
-	/** @var IDBConnection */
-	protected $connection;
+	protected IConfig $config;
 
-	/** @var IConfig */
-	protected $config;
-
-	/** @var ISecureRandom */
-	protected $secureRandom;
+	protected ISecureRandom $secureRandom;
 
 	/** @var string[] */
-	protected $tokens;
+	protected array $tokens;
 
 	public function __construct(IDBConnection $connection,
 								IConfig $config,
@@ -79,7 +75,7 @@ class Version2000Date20171026140257 extends SimpleMigrationStep {
 			->from('spreedme_rooms')
 			->where($query->expr()->emptyString('token'))
 			->orWhere($query->expr()->isNull('token'));
-		$result = $query->execute();
+		$result = $query->executeQuery();
 
 		$output->startProgress();
 		while ($row = $result->fetch()) {
@@ -89,7 +85,7 @@ class Version2000Date20171026140257 extends SimpleMigrationStep {
 
 			$update->setParameter('token', $token)
 				->setParameter('room_id', (int) $row['id'], IQueryBuilder::PARAM_INT)
-				->execute();
+				->executeStatement();
 		}
 		$output->finishProgress();
 	}

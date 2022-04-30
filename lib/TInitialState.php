@@ -23,14 +23,15 @@ declare(strict_types=1);
 
 namespace OCA\Talk;
 
-use OC\HintException;
 use OC\User\NoUserException;
 use OCP\App\IAppManager;
+use OCP\AppFramework\Services\IInitialState;
 use OCP\Files\IRootFolder;
+use OCP\Files\NotFoundException;
 use OCP\Files\NotPermittedException;
+use OCP\HintException;
 use OCP\ICacheFactory;
 use OCP\IConfig;
-use OCP\IInitialStateService;
 use OCP\IUser;
 use OCP\Util;
 
@@ -40,19 +41,14 @@ trait TInitialState {
 	protected $talkConfig;
 	/** @var IConfig */
 	protected $serverConfig;
-	/** @var IInitialStateService */
-	protected $initialStateService;
+	/** @var IInitialState */
+	protected $initialState;
 	/** @var ICacheFactory */
 	protected $memcacheFactory;
 
 	protected function publishInitialStateShared(): void {
 		// Needed to enable the screensharing extension in Chromium < 72.
 		Util::addHeader('meta', ['id' => 'app', 'class' => 'nc-enable-screensharing-extension']);
-
-		$this->initialStateService->provideInitialState(
-			'talk', 'prefer_h264',
-			$this->serverConfig->getAppValue('spreed', 'prefer_h264', 'no') === 'yes'
-		);
 
 		$signalingMode = $this->talkConfig->getSignalingMode();
 		if ($signalingMode === Config::SIGNALING_CLUSTER_CONVERSATION
@@ -63,60 +59,136 @@ trait TInitialState {
 			);
 		}
 
-		$this->initialStateService->provideInitialState(
-			'talk', 'signaling_mode',
+		$this->initialState->provideInitialState(
+			'signaling_mode',
 			$this->talkConfig->getSignalingMode()
+		);
+
+		$this->initialState->provideInitialState(
+			'sip_dialin_info',
+			$this->talkConfig->getDialInInfo()
+		);
+
+		$this->initialState->provideInitialState(
+			'grid_videos_limit',
+			$this->talkConfig->getGridVideosLimit()
+		);
+
+		$this->initialState->provideInitialState(
+			'grid_videos_limit_enforced',
+			$this->talkConfig->getGridVideosLimitEnforced()
+		);
+
+		$this->initialState->provideInitialState(
+			'federation_enabled',
+			$this->talkConfig->isFederationEnabled()
 		);
 	}
 
 	protected function publishInitialStateForUser(IUser $user, IRootFolder $rootFolder, IAppManager $appManager): void {
 		$this->publishInitialStateShared();
 
-		$this->initialStateService->provideInitialState(
-			'talk', 'start_conversations',
+		$this->initialState->provideInitialState(
+			'start_conversations',
 			!$this->talkConfig->isNotAllowedToCreateConversations($user)
 		);
 
-		$this->initialStateService->provideInitialState(
-			'talk', 'circles_enabled',
+		$this->initialState->provideInitialState(
+			'circles_enabled',
 			$appManager->isEnabledForUser('circles', $user)
 		);
 
-		$attachmentFolder = $this->talkConfig->getAttachmentFolder($user->getUID());
-		$this->initialStateService->provideInitialState(
-			'talk', 'attachment_folder',
-			$attachmentFolder
+		$this->initialState->provideInitialState(
+			'guests_accounts_enabled',
+			$appManager->isEnabledForUser('guests', $user)
 		);
+
+		$this->initialState->provideInitialState(
+			'read_status_privacy',
+			$this->talkConfig->getUserReadPrivacy($user->getUID())
+		);
+
+		$this->initialState->provideInitialState(
+			'play_sounds',
+			$this->serverConfig->getUserValue($user->getUID(), 'spreed', 'play_sounds', 'yes') === 'yes'
+		);
+
+		$attachmentFolder = $this->talkConfig->getAttachmentFolder($user->getUID());
+		$freeSpace = 0;
 
 		if ($attachmentFolder) {
 			try {
 				$userFolder = $rootFolder->getUserFolder($user->getUID());
 
-				if (!$userFolder->nodeExists($attachmentFolder)) {
-					$userFolder->newFolder($attachmentFolder);
+				try {
+					try {
+						$folder = $userFolder->get($attachmentFolder);
+					} catch (NotFoundException $e) {
+						$folder = $userFolder->newFolder($attachmentFolder);
+					}
+
+					$freeSpace = $folder->getFreeSpace();
+				} catch (NotPermittedException $e) {
+					$attachmentFolder = '/';
+					$this->serverConfig->setUserValue($user->getUID(), 'spreed', 'attachment_folder', '/');
+					$freeSpace = $userFolder->getFreeSpace();
 				}
-			} catch (NotPermittedException $e) {
 			} catch (NoUserException $e) {
 			}
 		}
+
+		$this->initialState->provideInitialState(
+			'attachment_folder',
+			$attachmentFolder
+		);
+
+		$this->initialState->provideInitialState(
+			'attachment_folder_free_space',
+			$freeSpace
+		);
+
+		$this->initialState->provideInitialState(
+			'enable_matterbridge',
+			$this->serverConfig->getAppValue('spreed', 'enable_matterbridge', '0') === '1'
+		);
 	}
 
 	protected function publishInitialStateForGuest(): void {
 		$this->publishInitialStateShared();
 
-		$this->initialStateService->provideInitialState(
-			'talk', 'start_conversations',
+		$this->initialState->provideInitialState(
+			'start_conversations',
 			false
 		);
 
-		$this->initialStateService->provideInitialState(
-			'talk', 'circles_enabled',
+		$this->initialState->provideInitialState(
+			'circles_enabled',
 			false
 		);
 
-		$this->initialStateService->provideInitialState(
-			'talk', 'attachment_folder',
+		$this->initialState->provideInitialState(
+			'read_status_privacy',
+			Participant::PRIVACY_PUBLIC
+		);
+
+		$this->initialState->provideInitialState(
+			'attachment_folder',
 			''
+		);
+
+		$this->initialState->provideInitialState(
+			'attachment_folder_free_space',
+			''
+		);
+
+		$this->initialState->provideInitialState(
+			'enable_matterbridge',
+			false
+		);
+
+		$this->initialState->provideInitialState(
+			'play_sounds',
+			false
 		);
 	}
 }

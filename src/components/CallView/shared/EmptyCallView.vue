@@ -19,7 +19,7 @@
   -->
 
 <template>
-	<div class="empty-call-view">
+	<div class="empty-call-view" :class="{'empty-call-view--sidebar': isSidebar}">
 		<div class="icon" :class="iconClass" />
 		<h2>
 			{{ title }}
@@ -49,12 +49,21 @@ export default {
 			type: Boolean,
 			default: false,
 		},
+
+		isSidebar: {
+			type: Boolean,
+			default: false,
+		},
 	},
 
 	computed: {
 
 		token() {
 			return this.$store.getters.getToken()
+		},
+
+		isConnecting() {
+			return this.$store.getters.isConnecting(this.token)
 		},
 
 		conversation() {
@@ -90,16 +99,24 @@ export default {
 
 		iconClass() {
 			return {
-				'icon-public': this.isPublicConversation,
-				'icon-contacts': !this.isPublicConversation,
+				'icon-loading': this.isConnecting,
+				'icon-public': !this.isConnecting && this.isPublicConversation,
+				'icon-contacts': !this.isConnecting && !this.isPublicConversation,
 			}
 		},
 
 		title() {
+			if (this.isConnecting) {
+				return t('spreed', 'Connecting …')
+			}
 			return t('spreed', 'Waiting for others to join the call …')
 		},
 
 		message() {
+			if (this.isConnecting) {
+				return ''
+			}
+
 			if (this.isPasswordRequestConversation || this.isFileConversation) {
 				return ''
 			}
@@ -147,17 +164,16 @@ export default {
 }
 </script>
 
-<style lang="scss">
+<style lang="scss" scoped>
 
 .empty-call-view {
 	height: 100%;
 	width: 100%;
-	position: relative;
+	position: absolute;
 	display: flex;
 	flex-direction: column;
 	align-content: center;
 	justify-content: center;
-	color: var(--color-text-maxcontrast);
 	text-align: center;
 	.icon {
 		background-size: 64px;
@@ -168,5 +184,24 @@ export default {
 	button {
 		margin: 4px auto;
 	}
+
+	h2, p {
+		color: #ffffff;
+	}
+
+	&--sidebar {
+		padding-bottom: 16px;
+
+		h2, p {
+			font-size: 90%;
+		}
+
+		.icon {
+			transform: scale(0.7);
+			margin-top: 0;
+			margin-bottom: 0;
+		}
+	}
 }
+
 </style>
