@@ -23,7 +23,7 @@
 	},
 	"require-dev": {
 		"nextcloud/coding-standard": "^1.0",
-		"vimeo/psalm": "^4.22",
+		"vimeo/psalm": "^5.2",
 		"christophwurst/nextcloud": "dev-master"
 	}
 }
